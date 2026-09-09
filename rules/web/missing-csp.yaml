@@ -1,0 +1,15 @@
+id: ABSL-WEB-002
+name: Missing Content-Security-Policy header
+severity: low
+
+description: >
+  The HTTP response does not contain a Content-Security-Policy header.
+
+remediation: >
+  Review the application's content requirements and deploy an appropriate
+  Content-Security-Policy.
+
+match:
+  protocol: tcp
+  service: http
+  header_missing: content-security-policy

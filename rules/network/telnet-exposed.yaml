@@ -1,0 +1,14 @@
+id: ABSL-NET-001
+name: Telnet service exposed
+severity: high
+
+description: >
+  A Telnet service is reachable over the network. Telnet does not provide
+  transport encryption and may expose authentication and session data.
+
+remediation: >
+  Disable Telnet and use SSH or another encrypted management protocol.
+
+match:
+  protocol: tcp
+  port: 23

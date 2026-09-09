@@ -1,0 +1,15 @@
+id: ABSL-DB-002
+name: Elasticsearch HTTP service exposed
+severity: medium
+
+description: >
+  An Elasticsearch service appears reachable over its commonly used
+  HTTP API port.
+
+remediation: >
+  Restrict Elasticsearch to trusted networks and require appropriate
+  authentication.
+
+match:
+  protocol: tcp
+  port: 9200

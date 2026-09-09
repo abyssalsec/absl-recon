@@ -1,0 +1,14 @@
+id: ABSL-WEB-001
+name: Missing X-Content-Type-Options header
+severity: low
+
+description: >
+  The HTTP response does not contain the X-Content-Type-Options header.
+
+remediation: >
+  Configure X-Content-Type-Options with an appropriate value such as nosniff.
+
+match:
+  protocol: tcp
+  service: http
+  header_missing: x-content-type-options

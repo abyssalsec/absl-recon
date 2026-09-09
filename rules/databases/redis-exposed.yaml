@@ -1,0 +1,14 @@
+id: ABSL-DB-001
+name: Redis service exposed
+severity: medium
+
+description: >
+  A Redis service is reachable over the network and should be reviewed
+  for unnecessary exposure.
+
+remediation: >
+  Restrict Redis to trusted networks and configure authentication and ACLs.
+
+match:
+  protocol: tcp
+  port: 6379

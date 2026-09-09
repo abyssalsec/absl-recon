@@ -1,0 +1,15 @@
+id: ABSL-CTR-001
+name: Potential plaintext Docker API exposure
+severity: critical
+
+description: >
+  TCP port 2375 is reachable. This port is commonly used for an
+  unencrypted Docker Engine API.
+
+remediation: >
+  Do not expose the Docker API over plaintext TCP. Prefer the local Unix
+  socket or configure mutually authenticated TLS.
+
+match:
+  protocol: tcp
+  port: 2375

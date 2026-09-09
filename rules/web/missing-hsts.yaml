@@ -1,0 +1,15 @@
+id: ABSL-WEB-003
+name: Missing Strict-Transport-Security header
+severity: medium
+
+description: >
+  An HTTPS service does not return the Strict-Transport-Security header.
+
+remediation: >
+  Review deployment requirements and configure HSTS where appropriate.
+
+match:
+  protocol: tcp
+  service: http
+  tls_required: true
+  header_missing: strict-transport-security

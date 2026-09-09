@@ -1,0 +1,4 @@
+bin/
+reports/
+.DS_Store
+*.log
