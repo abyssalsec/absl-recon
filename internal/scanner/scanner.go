@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/abyssalsec/absl-recon/internal/event"
 	"github.com/abyssalsec/absl-recon/internal/model"
 	"github.com/abyssalsec/absl-recon/internal/rules"
 )
@@ -22,8 +23,7 @@ type Config struct {
 	Concurrency int
 	Timeout     time.Duration
 	Rules       *rules.Engine
-
-	OnOpen func(model.Service)
+	Events      chan<- event.Event
 }
 
 type Scanner struct {
@@ -59,12 +59,38 @@ func (s *Scanner) Run(ctx context.Context) ([]model.Service, error) {
 				default:
 				}
 
-				if svc, ok := s.scanPort(port); ok {
-					select {
-					case results <- svc:
-					case <-ctx.Done():
-						return
-					}
+				svc, open := s.scanPort(port)
+
+				s.emit(event.Event{
+					Type: event.PortScanned,
+					Port: port,
+					At:   time.Now(),
+				})
+
+				if !open {
+					continue
+				}
+
+				s.emit(event.Event{
+					Type:    event.ServiceFound,
+					Port:    port,
+					Service: svc,
+					At:      time.Now(),
+				})
+
+				for _, finding := range svc.Findings {
+					s.emit(event.Event{
+						Type:    event.FindingFound,
+						Port:    port,
+						Finding: finding,
+						At:      time.Now(),
+					})
+				}
+
+				select {
+				case results <- svc:
+				case <-ctx.Done():
+					return
 				}
 			}
 		}()
@@ -90,11 +116,10 @@ func (s *Scanner) Run(ctx context.Context) ([]model.Service, error) {
 	var services []model.Service
 
 	for svc := range results {
-		services = append(services, svc)
-
-		if s.cfg.OnOpen != nil {
-			s.cfg.OnOpen(svc)
-		}
+		services = append(
+			services,
+			svc,
+		)
 	}
 
 	if ctx.Err() != nil {
@@ -102,6 +127,14 @@ func (s *Scanner) Run(ctx context.Context) ([]model.Service, error) {
 	}
 
 	return services, nil
+}
+
+func (s *Scanner) emit(ev event.Event) {
+	if s.cfg.Events == nil {
+		return
+	}
+
+	s.cfg.Events <- ev
 }
 
 func (s *Scanner) scanPort(port int) (model.Service, bool) {
@@ -135,6 +168,7 @@ func (s *Scanner) scanPort(port int) (model.Service, bool) {
 		_ = conn.Close()
 
 		tlsSvc, ok := s.scanTLS(port)
+
 		if ok {
 			svc = tlsSvc
 		}
@@ -150,6 +184,7 @@ func (s *Scanner) scanPort(port int) (model.Service, bool) {
 
 	default:
 		svc.Banner = readBanner(conn)
+
 		_ = conn.Close()
 
 		if svc.Banner != "" {
@@ -207,6 +242,7 @@ func (s *Scanner) scanTLS(port int) (model.Service, bool) {
 		Port:     port,
 		Protocol: "tcp",
 		Name:     serviceName(port),
+
 		TLS: &model.TLSInfo{
 			Version:    tlsVersion(state.Version),
 			Cipher:     tls.CipherSuiteName(state.CipherSuite),
@@ -217,8 +253,12 @@ func (s *Scanner) scanTLS(port int) (model.Service, bool) {
 	if len(state.PeerCertificates) > 0 {
 		cert := state.PeerCertificates[0]
 
-		svc.TLS.Issuer = cert.Issuer.String()
-		svc.TLS.NotAfter = cert.NotAfter.UTC().Format(time.RFC3339)
+		svc.TLS.Issuer =
+			cert.Issuer.String()
+
+		svc.TLS.NotAfter =
+			cert.NotAfter.UTC().
+				Format(time.RFC3339)
 	}
 
 	if isHTTPPort(port) {
@@ -250,58 +290,76 @@ func readHTTP(
 		conn,
 		"HEAD / HTTP/1.1\r\n"+
 			"Host: %s\r\n"+
-			"User-Agent: ABSL-Recon/0.2\r\n"+
+			"User-Agent: ABSL-Recon/0.3\r\n"+
 			"Accept: */*\r\n"+
 			"Connection: close\r\n\r\n",
 		host,
 	)
 
 	reader := bufio.NewReader(
-		io.LimitReader(conn, 16*1024),
+		io.LimitReader(
+			conn,
+			16*1024,
+		),
 	)
 
-	status, err := reader.ReadString('\n')
+	status, err :=
+		reader.ReadString('\n')
+
 	if err == nil {
-		svc.Banner = strings.TrimSpace(status)
+		svc.Banner =
+			strings.TrimSpace(status)
 	}
 
-	svc.Headers = map[string]string{}
+	svc.Headers =
+		map[string]string{}
 
 	for {
-		line, err := reader.ReadString('\n')
+		line, err :=
+			reader.ReadString('\n')
+
 		if err != nil {
 			break
 		}
 
-		line = strings.TrimSpace(line)
+		line =
+			strings.TrimSpace(line)
 
 		if line == "" {
 			break
 		}
 
-		parts := strings.SplitN(
-			line,
-			":",
-			2,
-		)
+		parts :=
+			strings.SplitN(
+				line,
+				":",
+				2,
+			)
 
 		if len(parts) != 2 {
 			continue
 		}
 
-		key := strings.ToLower(
-			strings.TrimSpace(parts[0]),
-		)
+		key :=
+			strings.ToLower(
+				strings.TrimSpace(
+					parts[0],
+				),
+			)
 
-		value := strings.TrimSpace(
-			parts[1],
-		)
+		value :=
+			strings.TrimSpace(
+				parts[1],
+			)
 
 		svc.Headers[key] = value
 	}
 
-	if server := svc.Headers["server"]; server != "" {
-		svc.Name = "http (" + server + ")"
+	if server :=
+		svc.Headers["server"]; server != "" {
+
+		svc.Name =
+			"http (" + server + ")"
 	}
 }
 
@@ -376,7 +434,9 @@ func serviceName(port int) string {
 		27017: "mongodb",
 	}
 
-	if name, ok := services[port]; ok {
+	if name, ok :=
+		services[port]; ok {
+
 		return name
 	}
 
@@ -387,20 +447,24 @@ func fingerprint(
 	fallback string,
 	banner string,
 ) string {
-	b := strings.ToLower(banner)
+	b := strings.ToLower(
+		banner,
+	)
 
-	signatures := map[string]string{
-		"openssh":       "ssh",
-		"ssh-":          "ssh",
-		"ftp":           "ftp",
-		"smtp":          "smtp",
-		"redis":         "redis",
-		"mysql":         "mysql",
-		"postgresql":    "postgresql",
-		"elasticsearch": "elasticsearch",
-	}
+	signatures :=
+		map[string]string{
+			"openssh":       "ssh",
+			"ssh-":          "ssh",
+			"ftp":           "ftp",
+			"smtp":          "smtp",
+			"redis":         "redis",
+			"mysql":         "mysql",
+			"postgresql":    "postgresql",
+			"elasticsearch": "elasticsearch",
+		}
 
 	for signature, name := range signatures {
+
 		if strings.Contains(
 			b,
 			signature,
@@ -453,26 +517,43 @@ func isTLSPort(port int) bool {
 }
 
 func ParsePorts(spec string) ([]int, error) {
-	seen := map[int]bool{}
+	seen :=
+		map[int]bool{}
 
 	var out []int
 
-	for _, token := range strings.Split(spec, ",") {
-		token = strings.TrimSpace(token)
+	for _, token := range strings.Split(
+		spec,
+		",",
+	) {
+
+		token =
+			strings.TrimSpace(token)
 
 		if token == "" {
 			continue
 		}
 
-		if strings.Contains(token, "-") {
-			parts := strings.SplitN(
-				token,
-				"-",
-				2,
-			)
+		if strings.Contains(
+			token,
+			"-",
+		) {
+			parts :=
+				strings.SplitN(
+					token,
+					"-",
+					2,
+				)
 
-			start, err1 := strconv.Atoi(parts[0])
-			end, err2 := strconv.Atoi(parts[1])
+			start, err1 :=
+				strconv.Atoi(
+					parts[0],
+				)
+
+			end, err2 :=
+				strconv.Atoi(
+					parts[1],
+				)
 
 			if err1 != nil ||
 				err2 != nil ||
@@ -480,44 +561,57 @@ func ParsePorts(spec string) ([]int, error) {
 				end > 65535 ||
 				start > end {
 
-				return nil, fmt.Errorf(
-					"invalid port range %q",
-					token,
-				)
+				return nil,
+					fmt.Errorf(
+						"invalid port range %q",
+						token,
+					)
 			}
 
 			for p := start; p <= end; p++ {
+
 				if !seen[p] {
 					seen[p] = true
-					out = append(out, p)
+
+					out = append(
+						out,
+						p,
+					)
 				}
 			}
 
 			continue
 		}
 
-		port, err := strconv.Atoi(token)
+		port, err :=
+			strconv.Atoi(token)
 
 		if err != nil ||
 			port < 1 ||
 			port > 65535 {
 
-			return nil, fmt.Errorf(
-				"invalid port %q",
-				token,
-			)
+			return nil,
+				fmt.Errorf(
+					"invalid port %q",
+					token,
+				)
 		}
 
 		if !seen[port] {
 			seen[port] = true
-			out = append(out, port)
+
+			out = append(
+				out,
+				port,
+			)
 		}
 	}
 
 	if len(out) == 0 {
-		return nil, fmt.Errorf(
-			"no ports selected",
-		)
+		return nil,
+			fmt.Errorf(
+				"no ports selected",
+			)
 	}
 
 	return out, nil
