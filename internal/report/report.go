@@ -17,7 +17,6 @@ func WriteAll(
 	base string,
 	r model.Report,
 ) error {
-
 	dir := filepath.Dir(base)
 
 	if dir != "." {
@@ -60,7 +59,6 @@ func writeJSON(
 	path string,
 	r model.Report,
 ) error {
-
 	data, err :=
 		json.MarshalIndent(
 			r,
@@ -83,7 +81,6 @@ func writeCSV(
 	path string,
 	r model.Report,
 ) error {
-
 	file, err :=
 		os.Create(path)
 
@@ -98,27 +95,33 @@ func writeCSV(
 
 	defer writer.Flush()
 
-	_ = writer.Write([]string{
-		"id",
-		"severity",
-		"port",
-		"protocol",
-		"title",
-		"evidence",
-		"remediation",
-	})
+	_ = writer.Write(
+		[]string{
+			"id",
+			"severity",
+			"port",
+			"protocol",
+			"title",
+			"evidence",
+			"remediation",
+		},
+	)
 
 	for _, finding := range r.Findings {
 
-		_ = writer.Write([]string{
-			finding.ID,
-			finding.Severity,
-			fmt.Sprint(finding.Port),
-			finding.Protocol,
-			finding.Title,
-			finding.Evidence,
-			finding.Remediation,
-		})
+		_ = writer.Write(
+			[]string{
+				finding.ID,
+				finding.Severity,
+				fmt.Sprint(
+					finding.Port,
+				),
+				finding.Protocol,
+				finding.Title,
+				finding.Evidence,
+				finding.Remediation,
+			},
+		)
 	}
 
 	return writer.Error()
@@ -128,7 +131,6 @@ func writeHTML(
 	path string,
 	r model.Report,
 ) error {
-
 	const tpl = `
 <!doctype html>
 
@@ -136,14 +138,12 @@ func writeHTML(
 
 <head>
 <meta charset="utf-8">
-
 <title>ABSL Recon Report</title>
 
 <style>
-
 body {
 	font-family: system-ui, sans-serif;
-	max-width: 1200px;
+	max-width: 1400px;
 	margin: 40px auto;
 	padding: 0 20px;
 	background: #111;
@@ -160,6 +160,7 @@ th, td {
 	border: 1px solid #333;
 	padding: 10px;
 	text-align: left;
+	vertical-align: top;
 }
 
 th {
@@ -187,7 +188,6 @@ code {
 .low {
 	color: #aaa;
 }
-
 </style>
 
 </head>
@@ -198,7 +198,9 @@ code {
 
 <p>
 Target: {{.Target}}<br>
+Version: {{.Version}}<br>
 Ports scanned: {{.Scanned}}<br>
+Open services: {{len .Services}}<br>
 Findings: {{len .Findings}}
 </p>
 
@@ -209,6 +211,10 @@ Findings: {{len .Findings}}
 <tr>
 <th>Port</th>
 <th>Service</th>
+<th>Product</th>
+<th>Version</th>
+<th>Confidence</th>
+<th>TLS</th>
 <th>Banner</th>
 </tr>
 
@@ -217,6 +223,20 @@ Findings: {{len .Findings}}
 <tr>
 <td>{{.Port}}/tcp</td>
 <td>{{.Name}}</td>
+<td>{{.Product}}</td>
+<td>{{.Version}}</td>
+<td>{{.Confidence}}%</td>
+
+<td>
+{{if .TLS}}
+{{.TLS.Version}}<br>
+{{.TLS.Cipher}}<br>
+{{if .TLS.Subject}}Subject: {{.TLS.Subject}}<br>{{end}}
+{{if .TLS.Issuer}}Issuer: {{.TLS.Issuer}}<br>{{end}}
+{{if .TLS.NotAfter}}Expires: {{.TLS.NotAfter}}{{end}}
+{{end}}
+</td>
+
 <td><code>{{.Banner}}</code></td>
 </tr>
 
@@ -240,17 +260,12 @@ Findings: {{len .Findings}}
 {{range .Findings}}
 
 <tr>
-
-<td class="{{.Severity}}">
-{{.Severity}}
-</td>
-
+<td class="{{.Severity}}">{{.Severity}}</td>
 <td>{{.ID}}</td>
 <td>{{.Port}}</td>
 <td>{{.Title}}</td>
 <td>{{.Evidence}}</td>
 <td>{{.Remediation}}</td>
-
 </tr>
 
 {{end}}
@@ -263,7 +278,9 @@ Findings: {{len .Findings}}
 `
 
 	t, err :=
-		template.New("report").
+		template.New(
+			"report",
+		).
 			Parse(tpl)
 
 	if err != nil {
@@ -289,7 +306,6 @@ func writeSARIF(
 	path string,
 	r model.Report,
 ) error {
-
 	rules :=
 		map[string]map[string]any{}
 
@@ -299,7 +315,6 @@ func writeSARIF(
 
 		rules[finding.ID] =
 			map[string]any{
-
 				"id": finding.ID,
 
 				"name": strings.ReplaceAll(
@@ -320,9 +335,7 @@ func writeSARIF(
 		results =
 			append(
 				results,
-
 				map[string]any{
-
 					"ruleId": finding.ID,
 
 					"level": sarifLevel(
@@ -330,7 +343,6 @@ func writeSARIF(
 					),
 
 					"message": map[string]string{
-
 						"text": fmt.Sprintf(
 							"%s (tcp/%d): %s",
 							finding.Title,
@@ -350,7 +362,11 @@ func writeSARIF(
 		)
 
 	for id := range rules {
-		ids = append(ids, id)
+		ids =
+			append(
+				ids,
+				id,
+			)
 	}
 
 	sort.Strings(ids)
@@ -370,31 +386,28 @@ func writeSARIF(
 			)
 	}
 
-	doc := map[string]any{
+	doc :=
+		map[string]any{
+			"version": "2.1.0",
 
-		"version": "2.1.0",
+			"$schema": "https://json.schemastore.org/sarif-2.1.0.json",
 
-		"$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+			"runs": []any{
+				map[string]any{
+					"tool": map[string]any{
+						"driver": map[string]any{
+							"name": "ABSL Recon",
 
-		"runs": []any{
-			map[string]any{
+							"version": r.Version,
 
-				"tool": map[string]any{
-
-					"driver": map[string]any{
-
-						"name": "ABSL Recon",
-
-						"version": r.Version,
-
-						"rules": ruleList,
+							"rules": ruleList,
+						},
 					},
-				},
 
-				"results": results,
+					"results": results,
+				},
 			},
-		},
-	}
+		}
 
 	data, err :=
 		json.MarshalIndent(
@@ -417,22 +430,19 @@ func writeSARIF(
 func sarifLevel(
 	severity string,
 ) string {
-
 	switch strings.ToLower(
 		severity,
 	) {
-
-	case "critical",
+	case
+		"critical",
 		"high":
 
 		return "error"
 
 	case "medium":
-
 		return "warning"
 
 	default:
-
 		return "note"
 	}
 }

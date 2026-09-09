@@ -20,7 +20,7 @@ import (
 	"github.com/abyssalsec/absl-recon/internal/terminal"
 )
 
-const version = "0.3.0"
+const version = "0.4.0"
 
 func main() {
 	portsSpec :=

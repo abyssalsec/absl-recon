@@ -64,7 +64,7 @@ func (r *Renderer) PrintHeader() {
 	fmt.Println(
 		strings.Repeat(
 			"-",
-			64,
+			72,
 		),
 	)
 
@@ -77,7 +77,7 @@ func (r *Renderer) PrintHeader() {
 	fmt.Printf(
 		"%-12s %s\n",
 		"Scan",
-		"TCP Connect",
+		"TCP Connect + Active Fingerprinting",
 	)
 
 	fmt.Printf(
@@ -145,25 +145,38 @@ func (r *Renderer) handle(
 		r.clearProgressLocked()
 
 		fmt.Printf(
-			"%sOPEN%s  %5d/tcp  %-22s %s\n",
+			"%sOPEN%s  %5d/tcp  %-16s %-24s %s\n",
 			green,
 			reset,
 			ev.Service.Port,
 			serviceName(ev.Service),
+			productLabel(ev.Service),
 			truncate(
 				ev.Service.Banner,
-				64,
+				50,
 			),
 		)
 
 		if ev.Service.TLS != nil {
 			fmt.Printf(
-				"      %sTLS%s   %-8s %s\n",
+				"      %sTLS%s   %-8s %-30s",
 				cyan,
 				reset,
 				ev.Service.TLS.Version,
 				ev.Service.TLS.Cipher,
 			)
+
+			if ev.Service.TLS.Subject != "" {
+				fmt.Printf(
+					" %s",
+					truncate(
+						ev.Service.TLS.Subject,
+						40,
+					),
+				)
+			}
+
+			fmt.Println()
 		}
 
 	case event.FindingFound:
@@ -259,7 +272,7 @@ func (r *Renderer) PrintSummary(
 	fmt.Println(
 		strings.Repeat(
 			"-",
-			64,
+			72,
 		),
 	)
 
@@ -300,17 +313,21 @@ func (r *Renderer) PrintSummary(
 		)
 
 		fmt.Printf(
-			"%-8s %-24s %s\n",
+			"%-10s %-16s %-28s %-10s %s\n",
 			"PORT",
 			"SERVICE",
-			"FINGERPRINT",
+			"PRODUCT",
+			"CONF",
+			"BANNER",
 		)
 
 		fmt.Printf(
-			"%-8s %-24s %s\n",
+			"%-10s %-16s %-28s %-10s %s\n",
 			"----",
 			"-------",
-			"-----------",
+			"-------",
+			"----",
+			"------",
 		)
 
 		ports :=
@@ -336,31 +353,27 @@ func (r *Renderer) PrintSummary(
 			svc :=
 				r.services[port]
 
-			fingerprint :=
-				svc.Banner
-
-			if svc.TLS != nil &&
-				fingerprint == "" {
-
-				fingerprint =
-					svc.TLS.Version +
-						" / " +
-						svc.TLS.Cipher
-			}
-
 			fmt.Printf(
-				"%-8s %-24s %s\n",
+				"%-10s %-16s %-28s %-10s %s\n",
 				fmt.Sprintf(
 					"%d/tcp",
 					svc.Port,
 				),
 				truncate(
 					serviceName(svc),
-					24,
+					16,
 				),
 				truncate(
-					fingerprint,
-					72,
+					productLabel(svc),
+					28,
+				),
+				fmt.Sprintf(
+					"%d%%",
+					svc.Confidence,
+				),
+				truncate(
+					svc.Banner,
+					50,
 				),
 			)
 		}
@@ -483,6 +496,28 @@ func serviceName(
 	}
 
 	return svc.Name
+}
+
+func productLabel(
+	svc model.Service,
+) string {
+	switch {
+	case svc.Product != "" &&
+		svc.Version != "":
+
+		return svc.Product +
+			" " +
+			svc.Version
+
+	case svc.Product != "":
+		return svc.Product
+
+	case svc.Version != "":
+		return svc.Version
+
+	default:
+		return "-"
+	}
 }
 
 func severityColor(
