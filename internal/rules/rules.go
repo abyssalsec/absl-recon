@@ -34,43 +34,73 @@ type Engine struct {
 func Load(dir string) (*Engine, error) {
 	var loaded []Rule
 
-	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
+	err := filepath.Walk(
+		dir,
+		func(
+			path string,
+			info os.FileInfo,
+			err error,
+		) error {
+			if err != nil {
+				return err
+			}
 
-		if info.IsDir() {
+			if info.IsDir() {
+				return nil
+			}
+
+			ext := strings.ToLower(
+				filepath.Ext(path),
+			)
+
+			if ext != ".yaml" &&
+				ext != ".yml" {
+
+				return nil
+			}
+
+			data, err := os.ReadFile(path)
+
+			if err != nil {
+				return err
+			}
+
+			var rule Rule
+
+			if err := yaml.Unmarshal(
+				data,
+				&rule,
+			); err != nil {
+
+				return fmt.Errorf(
+					"%s: %w",
+					path,
+					err,
+				)
+			}
+
+			if rule.ID == "" {
+				return fmt.Errorf(
+					"%s: rule id is required",
+					path,
+				)
+			}
+
+			if rule.Name == "" {
+				return fmt.Errorf(
+					"%s: rule name is required",
+					path,
+				)
+			}
+
+			loaded = append(
+				loaded,
+				rule,
+			)
+
 			return nil
-		}
-
-		ext := strings.ToLower(filepath.Ext(path))
-		if ext != ".yaml" && ext != ".yml" {
-			return nil
-		}
-
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-
-		var rule Rule
-
-		if err := yaml.Unmarshal(data, &rule); err != nil {
-			return fmt.Errorf("%s: %w", path, err)
-		}
-
-		if rule.ID == "" {
-			return fmt.Errorf("%s: rule id is required", path)
-		}
-
-		if rule.Name == "" {
-			return fmt.Errorf("%s: rule name is required", path)
-		}
-
-		loaded = append(loaded, rule)
-
-		return nil
-	})
+		},
+	)
 
 	if err != nil {
 		return nil, err
@@ -89,7 +119,9 @@ func (e *Engine) Count() int {
 	return len(e.rules)
 }
 
-func (e *Engine) Run(service model.Service) []model.Finding {
+func (e *Engine) Run(
+	service model.Service,
+) []model.Finding {
 	if e == nil {
 		return nil
 	}
@@ -97,59 +129,85 @@ func (e *Engine) Run(service model.Service) []model.Finding {
 	var findings []model.Finding
 
 	for _, rule := range e.rules {
-		if !matches(rule, service) {
+		if !matches(
+			rule,
+			service,
+		) {
 			continue
 		}
 
 		evidence := fmt.Sprintf(
-			"Rule %s matched service %s on %s/%d",
+			"Rule %s matched service %s on %s:%d/%s",
 			rule.ID,
 			service.Name,
-			service.Protocol,
+			service.Target,
 			service.Port,
+			service.Protocol,
 		)
 
 		if rule.Match.HeaderMissing != "" {
 			evidence = fmt.Sprintf(
-				"HTTP header %s was not present in the response",
+				"HTTP header %s was not present in the response from %s:%d",
 				rule.Match.HeaderMissing,
+				service.Target,
+				service.Port,
 			)
 		}
 
-		findings = append(findings, model.Finding{
-			ID:          rule.ID,
-			Title:       rule.Name,
-			Severity:    strings.ToLower(rule.Severity),
-			Port:        service.Port,
-			Protocol:    service.Protocol,
-			Description: rule.Description,
-			Evidence:    evidence,
-			Remediation: rule.Remediation,
-		})
+		findings = append(
+			findings,
+			model.Finding{
+				Target:      service.Target,
+				ID:          rule.ID,
+				Title:       rule.Name,
+				Severity:    strings.ToLower(rule.Severity),
+				Port:        service.Port,
+				Protocol:    service.Protocol,
+				Description: rule.Description,
+				Evidence:    evidence,
+				Remediation: rule.Remediation,
+			},
+		)
 	}
 
 	return findings
 }
 
-func matches(rule Rule, service model.Service) bool {
-	if rule.Match.Port != 0 && rule.Match.Port != service.Port {
+func matches(
+	rule Rule,
+	service model.Service,
+) bool {
+	if rule.Match.Port != 0 &&
+		rule.Match.Port != service.Port {
+
 		return false
 	}
 
 	if rule.Match.Protocol != "" &&
-		!strings.EqualFold(rule.Match.Protocol, service.Protocol) {
+		!strings.EqualFold(
+			rule.Match.Protocol,
+			service.Protocol,
+		) {
+
 		return false
 	}
 
 	if rule.Match.Service != "" &&
 		!strings.Contains(
-			strings.ToLower(service.Name),
-			strings.ToLower(rule.Match.Service),
+			strings.ToLower(
+				service.Name,
+			),
+			strings.ToLower(
+				rule.Match.Service,
+			),
 		) {
+
 		return false
 	}
 
-	if rule.Match.TLSRequired && service.TLS == nil {
+	if rule.Match.TLSRequired &&
+		service.TLS == nil {
+
 		return false
 	}
 
@@ -158,7 +216,9 @@ func matches(rule Rule, service model.Service) bool {
 			return false
 		}
 
-		header := strings.ToLower(rule.Match.HeaderMissing)
+		header := strings.ToLower(
+			rule.Match.HeaderMissing,
+		)
 
 		if _, exists := service.Headers[header]; exists {
 			return false

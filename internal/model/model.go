@@ -15,17 +15,20 @@ type TLSInfo struct {
 }
 
 type Finding struct {
-	ID          string `json:"id"`
-	Title       string `json:"title"`
-	Severity    string `json:"severity"`
-	Port        int    `json:"port,omitempty"`
-	Protocol    string `json:"protocol,omitempty"`
-	Description string `json:"description"`
-	Evidence    string `json:"evidence,omitempty"`
-	Remediation string `json:"remediation,omitempty"`
+	Target      string   `json:"target,omitempty"`
+	ID          string   `json:"id"`
+	Title       string   `json:"title"`
+	Severity    string   `json:"severity"`
+	Port        int      `json:"port,omitempty"`
+	Protocol    string   `json:"protocol,omitempty"`
+	Description string   `json:"description"`
+	Evidence    string   `json:"evidence,omitempty"`
+	Remediation string   `json:"remediation,omitempty"`
+	References  []string `json:"references,omitempty"`
 }
 
 type Service struct {
+	Target     string            `json:"target,omitempty"`
 	Port       int               `json:"port"`
 	Protocol   string            `json:"protocol"`
 	Name       string            `json:"name,omitempty"`
@@ -39,12 +42,15 @@ type Service struct {
 }
 
 type Report struct {
-	Tool      string    `json:"tool"`
-	Version   string    `json:"version"`
-	Target    string    `json:"target"`
-	StartedAt time.Time `json:"started_at"`
-	EndedAt   time.Time `json:"ended_at"`
+	Tool        string    `json:"tool"`
+	Version     string    `json:"version"`
+	Target      string    `json:"target_spec"`
+	Targets     []string  `json:"targets"`
+	LiveTargets []string  `json:"live_targets"`
+	StartedAt   time.Time `json:"started_at"`
+	EndedAt     time.Time `json:"ended_at"`
 
+	Hosts    int       `json:"hosts_scanned"`
 	Scanned  int       `json:"ports_scanned"`
 	Services []Service `json:"services"`
 	Findings []Finding `json:"findings"`

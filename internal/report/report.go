@@ -24,6 +24,7 @@ func WriteAll(
 			dir,
 			0755,
 		); err != nil {
+
 			return err
 		}
 	}
@@ -32,6 +33,7 @@ func WriteAll(
 		base+".json",
 		r,
 	); err != nil {
+
 		return err
 	}
 
@@ -39,6 +41,7 @@ func WriteAll(
 		base+".csv",
 		r,
 	); err != nil {
+
 		return err
 	}
 
@@ -46,6 +49,7 @@ func WriteAll(
 		base+".html",
 		r,
 	); err != nil {
+
 		return err
 	}
 
@@ -59,12 +63,11 @@ func writeJSON(
 	path string,
 	r model.Report,
 ) error {
-	data, err :=
-		json.MarshalIndent(
-			r,
-			"",
-			"  ",
-		)
+	data, err := json.MarshalIndent(
+		r,
+		"",
+		"  ",
+	)
 
 	if err != nil {
 		return err
@@ -81,8 +84,7 @@ func writeCSV(
 	path string,
 	r model.Report,
 ) error {
-	file, err :=
-		os.Create(path)
+	file, err := os.Create(path)
 
 	if err != nil {
 		return err
@@ -90,13 +92,13 @@ func writeCSV(
 
 	defer file.Close()
 
-	writer :=
-		csv.NewWriter(file)
+	writer := csv.NewWriter(file)
 
 	defer writer.Flush()
 
 	_ = writer.Write(
 		[]string{
+			"target",
 			"id",
 			"severity",
 			"port",
@@ -108,9 +110,9 @@ func writeCSV(
 	)
 
 	for _, finding := range r.Findings {
-
 		_ = writer.Write(
 			[]string{
+				finding.Target,
 				finding.ID,
 				finding.Severity,
 				fmt.Sprint(
@@ -133,72 +135,60 @@ func writeHTML(
 ) error {
 	const tpl = `
 <!doctype html>
-
 <html>
-
 <head>
 <meta charset="utf-8">
 <title>ABSL Recon Report</title>
-
 <style>
 body {
 	font-family: system-ui, sans-serif;
-	max-width: 1400px;
+	max-width: 1500px;
 	margin: 40px auto;
 	padding: 0 20px;
 	background: #111;
 	color: #eee;
 }
-
 table {
 	border-collapse: collapse;
 	width: 100%;
 	margin-bottom: 40px;
 }
-
 th, td {
 	border: 1px solid #333;
 	padding: 10px;
 	text-align: left;
 	vertical-align: top;
 }
-
 th {
 	background: #222;
 }
-
 code {
 	white-space: pre-wrap;
 }
-
 .critical {
 	color: #ff4d4d;
 	font-weight: bold;
 }
-
 .high {
 	color: #ff7b54;
 	font-weight: bold;
 }
-
 .medium {
 	color: #ffd166;
 }
-
 .low {
 	color: #aaa;
 }
 </style>
-
 </head>
-
 <body>
 
 <h1>ABSL Recon</h1>
 
 <p>
-Target: {{.Target}}<br>
+Target specification: {{.Target}}<br>
 Version: {{.Version}}<br>
+Hosts scanned: {{.Hosts}}<br>
 Ports scanned: {{.Scanned}}<br>
 Open services: {{len .Services}}<br>
 Findings: {{len .Findings}}
@@ -207,8 +197,8 @@ Findings: {{len .Findings}}
 <h2>Services</h2>
 
 <table>
-
 <tr>
+<th>Target</th>
 <th>Port</th>
 <th>Service</th>
 <th>Product</th>
@@ -219,14 +209,13 @@ Findings: {{len .Findings}}
 </tr>
 
 {{range .Services}}
-
 <tr>
+<td>{{.Target}}</td>
 <td>{{.Port}}/tcp</td>
 <td>{{.Name}}</td>
 <td>{{.Product}}</td>
 <td>{{.Version}}</td>
 <td>{{.Confidence}}%</td>
-
 <td>
 {{if .TLS}}
 {{.TLS.Version}}<br>
@@ -236,19 +225,16 @@ Findings: {{len .Findings}}
 {{if .TLS.NotAfter}}Expires: {{.TLS.NotAfter}}{{end}}
 {{end}}
 </td>
-
 <td><code>{{.Banner}}</code></td>
 </tr>
-
 {{end}}
-
 </table>
 
 <h2>Findings</h2>
 
 <table>
-
 <tr>
+<th>Target</th>
 <th>Severity</th>
 <th>ID</th>
 <th>Port</th>
@@ -258,8 +244,8 @@ Findings: {{len .Findings}}
 </tr>
 
 {{range .Findings}}
-
 <tr>
+<td>{{.Target}}</td>
 <td class="{{.Severity}}">{{.Severity}}</td>
 <td>{{.ID}}</td>
 <td>{{.Port}}</td>
@@ -267,28 +253,22 @@ Findings: {{len .Findings}}
 <td>{{.Evidence}}</td>
 <td>{{.Remediation}}</td>
 </tr>
-
 {{end}}
-
 </table>
 
 </body>
-
 </html>
 `
 
-	t, err :=
-		template.New(
-			"report",
-		).
-			Parse(tpl)
+	t, err := template.New(
+		"report",
+	).Parse(tpl)
 
 	if err != nil {
 		return err
 	}
 
-	file, err :=
-		os.Create(path)
+	file, err := os.Create(path)
 
 	if err != nil {
 		return err
@@ -306,13 +286,11 @@ func writeSARIF(
 	path string,
 	r model.Report,
 ) error {
-	rules :=
-		map[string]map[string]any{}
+	rules := map[string]map[string]any{}
 
 	var results []map[string]any
 
 	for _, finding := range r.Findings {
-
 		rules[finding.ID] =
 			map[string]any{
 				"id": finding.ID,
@@ -332,89 +310,83 @@ func writeSARIF(
 				},
 			}
 
-		results =
-			append(
-				results,
-				map[string]any{
-					"ruleId": finding.ID,
+		results = append(
+			results,
+			map[string]any{
+				"ruleId": finding.ID,
 
-					"level": sarifLevel(
-						finding.Severity,
+				"level": sarifLevel(
+					finding.Severity,
+				),
+
+				"message": map[string]string{
+					"text": fmt.Sprintf(
+						"%s (%s tcp/%d): %s",
+						finding.Title,
+						finding.Target,
+						finding.Port,
+						finding.Evidence,
 					),
-
-					"message": map[string]string{
-						"text": fmt.Sprintf(
-							"%s (tcp/%d): %s",
-							finding.Title,
-							finding.Port,
-							finding.Evidence,
-						),
-					},
 				},
-			)
+			},
+		)
 	}
 
-	ids :=
-		make(
-			[]string,
-			0,
-			len(rules),
-		)
+	ids := make(
+		[]string,
+		0,
+		len(rules),
+	)
 
 	for id := range rules {
-		ids =
-			append(
-				ids,
-				id,
-			)
+		ids = append(
+			ids,
+			id,
+		)
 	}
 
 	sort.Strings(ids)
 
-	ruleList :=
-		make(
-			[]map[string]any,
-			0,
-			len(ids),
-		)
+	ruleList := make(
+		[]map[string]any,
+		0,
+		len(ids),
+	)
 
 	for _, id := range ids {
-		ruleList =
-			append(
-				ruleList,
-				rules[id],
-			)
+		ruleList = append(
+			ruleList,
+			rules[id],
+		)
 	}
 
-	doc :=
-		map[string]any{
-			"version": "2.1.0",
+	doc := map[string]any{
+		"version": "2.1.0",
 
-			"$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+		"$schema": "https://json.schemastore.org/sarif-2.1.0.json",
 
-			"runs": []any{
-				map[string]any{
-					"tool": map[string]any{
-						"driver": map[string]any{
-							"name": "ABSL Recon",
+		"runs": []any{
+			map[string]any{
+				"tool": map[string]any{
+					"driver": map[string]any{
+						"name": "ABSL Recon",
 
-							"version": r.Version,
+						"version": r.Version,
 
-							"rules": ruleList,
-						},
+						"rules": ruleList,
 					},
-
-					"results": results,
 				},
-			},
-		}
 
-	data, err :=
-		json.MarshalIndent(
-			doc,
-			"",
-			"  ",
-		)
+				"results": results,
+			},
+		},
+	}
+
+	data, err := json.MarshalIndent(
+		doc,
+		"",
+		"  ",
+	)
 
 	if err != nil {
 		return err

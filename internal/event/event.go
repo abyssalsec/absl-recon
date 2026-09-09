@@ -16,6 +16,7 @@ const (
 
 type Event struct {
 	Type    Type
+	Target  string
 	Port    int
 	Service model.Service
 	Finding model.Finding

@@ -13,6 +13,7 @@ import (
 	"github.com/abyssalsec/absl-recon/internal/fingerprint"
 	"github.com/abyssalsec/absl-recon/internal/model"
 	"github.com/abyssalsec/absl-recon/internal/rules"
+	"github.com/abyssalsec/absl-recon/internal/vuln"
 )
 
 type Config struct {
@@ -21,6 +22,7 @@ type Config struct {
 	Concurrency int
 	Timeout     time.Duration
 	Rules       *rules.Engine
+	Vulns       *vuln.Engine
 	Events      chan<- event.Event
 }
 
@@ -28,7 +30,9 @@ type Scanner struct {
 	cfg Config
 }
 
-func New(cfg Config) *Scanner {
+func New(
+	cfg Config,
+) *Scanner {
 	return &Scanner{
 		cfg: cfg,
 	}
@@ -66,9 +70,10 @@ func (s *Scanner) Run(
 
 				s.emit(
 					event.Event{
-						Type: event.PortScanned,
-						Port: port,
-						At:   time.Now(),
+						Type:   event.PortScanned,
+						Target: s.cfg.Target,
+						Port:   port,
+						At:     time.Now(),
 					},
 				)
 
@@ -79,6 +84,7 @@ func (s *Scanner) Run(
 				s.emit(
 					event.Event{
 						Type:    event.ServiceFound,
+						Target:  s.cfg.Target,
 						Port:    port,
 						Service: svc,
 						At:      time.Now(),
@@ -90,6 +96,7 @@ func (s *Scanner) Run(
 					s.emit(
 						event.Event{
 							Type:    event.FindingFound,
+							Target:  s.cfg.Target,
 							Port:    port,
 							Finding: finding,
 							At:      time.Now(),
@@ -129,15 +136,15 @@ func (s *Scanner) Run(
 	var services []model.Service
 
 	for svc := range results {
-		services =
-			append(
-				services,
-				svc,
-			)
+		services = append(
+			services,
+			svc,
+		)
 	}
 
 	if ctx.Err() != nil {
-		return services, ctx.Err()
+		return services,
+			ctx.Err()
 	}
 
 	return services, nil
@@ -156,37 +163,42 @@ func (s *Scanner) emit(
 func (s *Scanner) scanPort(
 	port int,
 ) (model.Service, bool) {
-	addr :=
-		net.JoinHostPort(
-			s.cfg.Target,
-			strconv.Itoa(port),
-		)
+	addr := net.JoinHostPort(
+		s.cfg.Target,
+		strconv.Itoa(port),
+	)
 
-	conn, err :=
-		net.DialTimeout(
-			"tcp",
-			addr,
-			s.cfg.Timeout,
-		)
+	conn, err := net.DialTimeout(
+		"tcp",
+		addr,
+		s.cfg.Timeout,
+	)
 
 	if err != nil {
-		return model.Service{}, false
+		return model.Service{},
+			false
 	}
 
 	_ = conn.Close()
 
-	svc :=
-		fingerprint.Probe(
-			fingerprint.Config{
-				Target:  s.cfg.Target,
-				Port:    port,
-				Timeout: s.cfg.Timeout,
-			},
-		)
+	svc := fingerprint.Probe(
+		fingerprint.Config{
+			Target:  s.cfg.Target,
+			Port:    port,
+			Timeout: s.cfg.Timeout,
+		},
+	)
 
 	if s.cfg.Rules != nil {
 		svc.Findings =
 			s.cfg.Rules.Run(svc)
+	}
+
+	if s.cfg.Vulns != nil {
+		svc.Findings = append(
+			svc.Findings,
+			s.cfg.Vulns.Match(svc)...,
+		)
 	}
 
 	return svc, true
@@ -195,8 +207,7 @@ func (s *Scanner) scanPort(
 func ParsePorts(
 	spec string,
 ) ([]int, error) {
-	seen :=
-		map[int]bool{}
+	seen := map[int]bool{}
 
 	var out []int
 
@@ -205,8 +216,9 @@ func ParsePorts(
 		",",
 	) {
 
-		token =
-			strings.TrimSpace(token)
+		token = strings.TrimSpace(
+			token,
+		)
 
 		if token == "" {
 			continue
@@ -216,22 +228,19 @@ func ParsePorts(
 			token,
 			"-",
 		) {
-			parts :=
-				strings.SplitN(
-					token,
-					"-",
-					2,
-				)
+			parts := strings.SplitN(
+				token,
+				"-",
+				2,
+			)
 
-			start, err1 :=
-				strconv.Atoi(
-					parts[0],
-				)
+			start, err1 := strconv.Atoi(
+				parts[0],
+			)
 
-			end, err2 :=
-				strconv.Atoi(
-					parts[1],
-				)
+			end, err2 := strconv.Atoi(
+				parts[1],
+			)
 
 			if err1 != nil ||
 				err2 != nil ||
@@ -251,19 +260,17 @@ func ParsePorts(
 				if !seen[p] {
 					seen[p] = true
 
-					out =
-						append(
-							out,
-							p,
-						)
+					out = append(
+						out,
+						p,
+					)
 				}
 			}
 
 			continue
 		}
 
-		port, err :=
-			strconv.Atoi(token)
+		port, err := strconv.Atoi(token)
 
 		if err != nil ||
 			port < 1 ||
@@ -279,11 +286,10 @@ func ParsePorts(
 		if !seen[port] {
 			seen[port] = true
 
-			out =
-				append(
-					out,
-					port,
-				)
+			out = append(
+				out,
+				port,
+			)
 		}
 	}
 

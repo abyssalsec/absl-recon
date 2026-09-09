@@ -21,23 +21,38 @@ type Config struct {
 }
 
 var (
-	openSSHPattern = regexp.MustCompile(`(?i)OpenSSH[_-]([^\s]+)`)
-	proFTPDPattern = regexp.MustCompile(`(?i)ProFTPD[ /]([^\s]+)`)
-	vsFTPDPattern  = regexp.MustCompile(`(?i)vsFTPd[ /]([^\s]+)`)
-	postfixPattern = regexp.MustCompile(`(?i)Postfix`)
-	eximPattern    = regexp.MustCompile(`(?i)Exim(?:[ /]([^\s]+))?`)
+	openSSHPattern = regexp.MustCompile(
+		`(?i)OpenSSH[_-]([^\s]+)`,
+	)
+
+	proFTPDPattern = regexp.MustCompile(
+		`(?i)ProFTPD[ /]([^\s]+)`,
+	)
+
+	vsFTPDPattern = regexp.MustCompile(
+		`(?i)vsFTPd[ /]([^\s]+)`,
+	)
+
+	postfixPattern = regexp.MustCompile(
+		`(?i)Postfix`,
+	)
+
+	eximPattern = regexp.MustCompile(
+		`(?i)Exim(?:[ /]([^\s]+))?`,
+	)
 )
 
-func Probe(cfg Config) model.Service {
+func Probe(
+	cfg Config,
+) model.Service {
 	svc := model.Service{
+		Target:     cfg.Target,
 		Port:       cfg.Port,
 		Protocol:   "tcp",
 		Name:       "unknown",
 		Confidence: 0,
 	}
 
-	// Known TLS ports get TLS first to avoid wasting time
-	// sending a plaintext HTTP probe to them.
 	if isLikelyTLSPort(cfg.Port) {
 		if detected, ok := probeTLS(cfg); ok {
 			if detected.Name == "tls" {
@@ -50,37 +65,33 @@ func Probe(cfg Config) model.Service {
 		}
 	}
 
-	// Common HTTP ports get HTTP first.
 	if isLikelyHTTPPort(cfg.Port) {
 		if detected, ok := probeHTTP(cfg); ok {
 			return detected
 		}
 	}
 
-	// Many classic protocols immediately send a banner.
 	if raw := probeBanner(cfg); len(raw) > 0 {
 		svc.Banner = sanitize(raw)
 
-		if classifyBanner(&svc, raw) {
+		if classifyBanner(
+			&svc,
+			raw,
+		) {
 			return svc
 		}
 	}
 
-	// Redis has no greeting, so use a harmless PING.
 	if cfg.Port == 6379 {
 		if detected, ok := probeRedis(cfg); ok {
 			return detected
 		}
 	}
 
-	// Unknown port: try HTTP. This allows HTTP services on
-	// ports such as 5000, 3000, 9001, etc.
 	if detected, ok := probeHTTP(cfg); ok {
 		return detected
 	}
 
-	// Then try TLS. If HTTP exists inside TLS, probeTLS
-	// identifies it as HTTPS.
 	if detected, ok := probeTLS(cfg); ok {
 		if detected.Name == "tls" {
 			if hint := serviceHint(cfg.Port); hint != "" {
@@ -91,7 +102,6 @@ func Probe(cfg Config) model.Service {
 		return detected
 	}
 
-	// Last-resort low-confidence port hint.
 	if hint := serviceHint(cfg.Port); hint != "" {
 		svc.Name = hint
 		svc.Confidence = 20
@@ -100,8 +110,11 @@ func Probe(cfg Config) model.Service {
 	return svc
 }
 
-func probeBanner(cfg Config) []byte {
+func probeBanner(
+	cfg Config,
+) []byte {
 	conn, err := dial(cfg)
+
 	if err != nil {
 		return nil
 	}
@@ -110,19 +123,34 @@ func probeBanner(cfg Config) []byte {
 
 	_ = conn.SetReadDeadline(
 		time.Now().Add(
-			probeTimeout(cfg.Timeout),
+			probeTimeout(
+				cfg.Timeout,
+			),
 		),
 	)
 
-	buf := make([]byte, 4096)
+	buf := make(
+		[]byte,
+		4096,
+	)
 
 	n, err := conn.Read(buf)
-	if err != nil || n == 0 {
+
+	if err != nil ||
+		n == 0 {
+
 		return nil
 	}
 
-	result := make([]byte, n)
-	copy(result, buf[:n])
+	result := make(
+		[]byte,
+		n,
+	)
+
+	copy(
+		result,
+		buf[:n],
+	)
 
 	return result
 }
@@ -131,9 +159,9 @@ func classifyBanner(
 	svc *model.Service,
 	raw []byte,
 ) bool {
-	// MySQL protocol v10 handshake:
-	// 3 byte packet length + sequence byte + protocol version 0x0a.
-	if len(raw) > 5 && raw[4] == 0x0a {
+	if len(raw) > 5 &&
+		raw[4] == 0x0a {
+
 		versionEnd := 5
 
 		for versionEnd < len(raw) &&
@@ -145,8 +173,9 @@ func classifyBanner(
 		version := ""
 
 		if versionEnd > 5 {
-			version =
-				string(raw[5:versionEnd])
+			version = string(
+				raw[5:versionEnd],
+			)
 		}
 
 		svc.Name = "mysql"
@@ -158,9 +187,15 @@ func classifyBanner(
 	}
 
 	banner := sanitize(raw)
-	lower := strings.ToLower(banner)
 
-	if strings.HasPrefix(lower, "ssh-") {
+	lower := strings.ToLower(
+		banner,
+	)
+
+	if strings.HasPrefix(
+		lower,
+		"ssh-",
+	) {
 		svc.Name = "ssh"
 		svc.Confidence = 100
 
@@ -170,14 +205,22 @@ func classifyBanner(
 			); len(match) > 1 {
 
 			svc.Product = "OpenSSH"
-			svc.Version = cleanVersion(match[1])
+			svc.Version = cleanVersion(
+				match[1],
+			)
 		}
 
 		return true
 	}
 
-	if strings.HasPrefix(lower, "220") &&
-		strings.Contains(lower, "ftp") {
+	if strings.HasPrefix(
+		lower,
+		"220",
+	) &&
+		strings.Contains(
+			lower,
+			"ftp",
+		) {
 
 		svc.Name = "ftp"
 		svc.Confidence = 95
@@ -188,7 +231,9 @@ func classifyBanner(
 			); len(match) > 1 {
 
 			svc.Product = "vsftpd"
-			svc.Version = cleanVersion(match[1])
+			svc.Version = cleanVersion(
+				match[1],
+			)
 
 		} else if match :=
 			proFTPDPattern.FindStringSubmatch(
@@ -196,23 +241,37 @@ func classifyBanner(
 			); len(match) > 1 {
 
 			svc.Product = "ProFTPD"
-			svc.Version = cleanVersion(match[1])
+			svc.Version = cleanVersion(
+				match[1],
+			)
 		}
 
 		return true
 	}
 
-	if strings.Contains(lower, "smtp") ||
-		strings.Contains(lower, "esmtp") {
+	if strings.Contains(
+		lower,
+		"smtp",
+	) ||
+		strings.Contains(
+			lower,
+			"esmtp",
+		) {
 
 		svc.Name = "smtp"
 		svc.Confidence = 95
 
 		switch {
-		case postfixPattern.MatchString(banner):
+		case postfixPattern.MatchString(
+			banner,
+		):
+
 			svc.Product = "Postfix"
 
-		case eximPattern.MatchString(banner):
+		case eximPattern.MatchString(
+			banner,
+		):
+
 			svc.Product = "Exim"
 
 			if match :=
@@ -220,16 +279,23 @@ func classifyBanner(
 					banner,
 				); len(match) > 1 {
 
-				svc.Version =
-					cleanVersion(match[1])
+				svc.Version = cleanVersion(
+					match[1],
+				)
 			}
 		}
 
 		return true
 	}
 
-	if strings.HasPrefix(lower, "+ok") &&
-		strings.Contains(lower, "pop") {
+	if strings.HasPrefix(
+		lower,
+		"+ok",
+	) &&
+		strings.Contains(
+			lower,
+			"pop",
+		) {
 
 		svc.Name = "pop3"
 		svc.Confidence = 90
@@ -237,8 +303,14 @@ func classifyBanner(
 		return true
 	}
 
-	if strings.HasPrefix(lower, "* ok") &&
-		strings.Contains(lower, "imap") {
+	if strings.HasPrefix(
+		lower,
+		"* ok",
+	) &&
+		strings.Contains(
+			lower,
+			"imap",
+		) {
 
 		svc.Name = "imap"
 		svc.Confidence = 90
@@ -253,6 +325,7 @@ func probeHTTP(
 	cfg Config,
 ) (model.Service, bool) {
 	conn, err := dial(cfg)
+
 	if err != nil {
 		return model.Service{}, false
 	}
@@ -261,7 +334,9 @@ func probeHTTP(
 
 	_ = conn.SetDeadline(
 		time.Now().Add(
-			probeTimeout(cfg.Timeout),
+			probeTimeout(
+				cfg.Timeout,
+			),
 		),
 	)
 
@@ -276,6 +351,7 @@ func probeHTTP(
 	}
 
 	svc := model.Service{
+		Target:     cfg.Target,
 		Port:       cfg.Port,
 		Protocol:   "tcp",
 		Name:       "http",
@@ -284,7 +360,9 @@ func probeHTTP(
 		Headers:    headers,
 	}
 
-	setHTTPProduct(&svc)
+	setHTTPProduct(
+		&svc,
+	)
 
 	return svc, true
 }
@@ -306,22 +384,26 @@ func probeTLS(
 		},
 	}
 
-	if net.ParseIP(cfg.Target) == nil {
+	if net.ParseIP(
+		cfg.Target,
+	) == nil {
+
 		tlsConfig.ServerName = cfg.Target
 	}
 
 	addr := net.JoinHostPort(
 		cfg.Target,
-		strconv.Itoa(cfg.Port),
+		strconv.Itoa(
+			cfg.Port,
+		),
 	)
 
-	conn, err :=
-		tls.DialWithDialer(
-			dialer,
-			"tcp",
-			addr,
-			tlsConfig,
-		)
+	conn, err := tls.DialWithDialer(
+		dialer,
+		"tcp",
+		addr,
+		tlsConfig,
+	)
 
 	if err != nil {
 		return model.Service{}, false
@@ -331,22 +413,33 @@ func probeTLS(
 
 	_ = conn.SetDeadline(
 		time.Now().Add(
-			probeTimeout(cfg.Timeout),
+			probeTimeout(
+				cfg.Timeout,
+			),
 		),
 	)
 
 	state := conn.ConnectionState()
 
 	info := &model.TLSInfo{
-		Version:    tlsVersion(state.Version),
-		Cipher:     tls.CipherSuiteName(state.CipherSuite),
+		Version: tlsVersion(
+			state.Version,
+		),
+
+		Cipher: tls.CipherSuiteName(
+			state.CipherSuite,
+		),
+
 		ServerName: state.ServerName,
-		ALPN:       state.NegotiatedProtocol,
+
+		ALPN: state.NegotiatedProtocol,
 	}
 
-	if len(state.PeerCertificates) > 0 {
-		cert :=
-			state.PeerCertificates[0]
+	if len(
+		state.PeerCertificates,
+	) > 0 {
+
+		cert := state.PeerCertificates[0]
 
 		info.Subject =
 			cert.Subject.String()
@@ -361,15 +454,22 @@ func probeTLS(
 			)
 
 		info.NotBefore =
-			cert.NotBefore.UTC().
-				Format(time.RFC3339)
+			cert.NotBefore.
+				UTC().
+				Format(
+					time.RFC3339,
+				)
 
 		info.NotAfter =
-			cert.NotAfter.UTC().
-				Format(time.RFC3339)
+			cert.NotAfter.
+				UTC().
+				Format(
+					time.RFC3339,
+				)
 	}
 
 	svc := model.Service{
+		Target:     cfg.Target,
 		Port:       cfg.Port,
 		Protocol:   "tcp",
 		Name:       "tls",
@@ -389,7 +489,9 @@ func probeTLS(
 		svc.Banner = status
 		svc.Headers = headers
 
-		setHTTPProduct(&svc)
+		setHTTPProduct(
+			&svc,
+		)
 	}
 
 	return svc, true
@@ -407,7 +509,7 @@ func probeHTTPConn(
 		conn,
 		"HEAD / HTTP/1.1\r\n"+
 			"Host: %s\r\n"+
-			"User-Agent: ABSL-Recon/0.4\r\n"+
+			"User-Agent: ABSL-Recon/0.6\r\n"+
 			"Accept: */*\r\n"+
 			"Connection: close\r\n\r\n",
 		host,
@@ -417,13 +519,12 @@ func probeHTTPConn(
 		return "", nil, false
 	}
 
-	reader :=
-		bufio.NewReader(
-			io.LimitReader(
-				conn,
-				16*1024,
-			),
-		)
+	reader := bufio.NewReader(
+		io.LimitReader(
+			conn,
+			16*1024,
+		),
+	)
 
 	status, err :=
 		reader.ReadString('\n')
@@ -432,18 +533,20 @@ func probeHTTPConn(
 		return "", nil, false
 	}
 
-	status =
-		strings.TrimSpace(status)
+	status = strings.TrimSpace(
+		status,
+	)
 
 	if !strings.HasPrefix(
-		strings.ToUpper(status),
+		strings.ToUpper(
+			status,
+		),
 		"HTTP/",
 	) {
 		return "", nil, false
 	}
 
-	headers :=
-		map[string]string{}
+	headers := map[string]string{}
 
 	for {
 		line, err :=
@@ -453,46 +556,47 @@ func probeHTTPConn(
 			break
 		}
 
-		line =
-			strings.TrimSpace(line)
+		line = strings.TrimSpace(
+			line,
+		)
 
 		if line == "" {
 			break
 		}
 
-		parts :=
-			strings.SplitN(
-				line,
-				":",
-				2,
-			)
+		parts := strings.SplitN(
+			line,
+			":",
+			2,
+		)
 
 		if len(parts) != 2 {
 			continue
 		}
 
-		key :=
-			strings.ToLower(
-				strings.TrimSpace(
-					parts[0],
-				),
-			)
-
-		value :=
+		key := strings.ToLower(
 			strings.TrimSpace(
-				parts[1],
-			)
+				parts[0],
+			),
+		)
+
+		value := strings.TrimSpace(
+			parts[1],
+		)
 
 		headers[key] = value
 	}
 
-	return status, headers, true
+	return status,
+		headers,
+		true
 }
 
 func probeRedis(
 	cfg Config,
 ) (model.Service, bool) {
 	conn, err := dial(cfg)
+
 	if err != nil {
 		return model.Service{}, false
 	}
@@ -501,7 +605,9 @@ func probeRedis(
 
 	_ = conn.SetDeadline(
 		time.Now().Add(
-			probeTimeout(cfg.Timeout),
+			probeTimeout(
+				cfg.Timeout,
+			),
 		),
 	)
 
@@ -515,27 +621,44 @@ func probeRedis(
 		return model.Service{}, false
 	}
 
-	buf := make([]byte, 1024)
+	buf := make(
+		[]byte,
+		1024,
+	)
 
 	n, err := conn.Read(buf)
 
-	if err != nil || n == 0 {
+	if err != nil ||
+		n == 0 {
+
 		return model.Service{}, false
 	}
 
-	response :=
-		strings.TrimSpace(
-			string(buf[:n]),
-		)
+	response := strings.TrimSpace(
+		string(
+			buf[:n],
+		),
+	)
 
-	lower :=
-		strings.ToLower(response)
+	lower := strings.ToLower(
+		response,
+	)
 
-	if strings.HasPrefix(lower, "+pong") ||
-		strings.Contains(lower, "noauth") ||
-		strings.Contains(lower, "denied") {
+	if strings.HasPrefix(
+		lower,
+		"+pong",
+	) ||
+		strings.Contains(
+			lower,
+			"noauth",
+		) ||
+		strings.Contains(
+			lower,
+			"denied",
+		) {
 
 		return model.Service{
+			Target:     cfg.Target,
 			Port:       cfg.Port,
 			Protocol:   "tcp",
 			Name:       "redis",
@@ -555,17 +678,18 @@ func setHTTPProduct(
 		return
 	}
 
-	server :=
-		strings.TrimSpace(
-			svc.Headers["server"],
-		)
+	server := strings.TrimSpace(
+		svc.Headers["server"],
+	)
 
 	if server == "" {
 		return
 	}
 
 	product, version :=
-		parseServerHeader(server)
+		parseServerHeader(
+			server,
+		)
 
 	svc.Product = product
 	svc.Version = version
@@ -574,8 +698,9 @@ func setHTTPProduct(
 func parseServerHeader(
 	server string,
 ) (string, string) {
-	fields :=
-		strings.Fields(server)
+	fields := strings.Fields(
+		server,
+	)
 
 	if len(fields) == 0 {
 		return "", ""
@@ -583,34 +708,38 @@ func parseServerHeader(
 
 	first := fields[0]
 
-	parts :=
-		strings.SplitN(
-			first,
-			"/",
-			2,
-		)
+	parts := strings.SplitN(
+		first,
+		"/",
+		2,
+	)
 
 	if len(parts) == 1 {
 		return parts[0], ""
 	}
 
 	return parts[0],
-		cleanVersion(parts[1])
+		cleanVersion(
+			parts[1],
+		)
 }
 
 func dial(
 	cfg Config,
 ) (net.Conn, error) {
-	addr :=
-		net.JoinHostPort(
-			cfg.Target,
-			strconv.Itoa(cfg.Port),
-		)
+	addr := net.JoinHostPort(
+		cfg.Target,
+		strconv.Itoa(
+			cfg.Port,
+		),
+	)
 
 	return net.DialTimeout(
 		"tcp",
 		addr,
-		probeTimeout(cfg.Timeout),
+		probeTimeout(
+			cfg.Timeout,
+		),
 	)
 }
 
@@ -668,29 +797,28 @@ func cleanVersion(
 func sanitize(
 	raw []byte,
 ) string {
-	value :=
-		strings.ReplaceAll(
-			string(raw),
-			"\x00",
-			" ",
-		)
+	value := strings.ReplaceAll(
+		string(raw),
+		"\x00",
+		" ",
+	)
 
-	value =
-		strings.ReplaceAll(
-			value,
-			"\r",
-			" ",
-		)
+	value = strings.ReplaceAll(
+		value,
+		"\r",
+		" ",
+	)
 
-	value =
-		strings.ReplaceAll(
-			value,
-			"\n",
-			" ",
-		)
+	value = strings.ReplaceAll(
+		value,
+		"\n",
+		" ",
+	)
 
 	return strings.Join(
-		strings.Fields(value),
+		strings.Fields(
+			value,
+		),
 		" ",
 	)
 }
@@ -744,39 +872,38 @@ func isLikelyTLSPort(
 func serviceHint(
 	port int,
 ) string {
-	hints :=
-		map[int]string{
-			21:    "ftp",
-			22:    "ssh",
-			23:    "telnet",
-			25:    "smtp",
-			53:    "dns",
-			80:    "http",
-			110:   "pop3",
-			143:   "imap",
-			443:   "https",
-			445:   "smb",
-			465:   "smtps",
-			587:   "smtp",
-			636:   "ldaps",
-			853:   "dns-tls",
-			990:   "ftps",
-			993:   "imaps",
-			995:   "pop3s",
-			1433:  "mssql",
-			1521:  "oracle",
-			2375:  "docker",
-			2376:  "docker-tls",
-			3306:  "mysql",
-			3389:  "rdp",
-			5432:  "postgresql",
-			6379:  "redis",
-			8000:  "http",
-			8080:  "http",
-			8443:  "https",
-			9200:  "elasticsearch",
-			27017: "mongodb",
-		}
+	hints := map[int]string{
+		21:    "ftp",
+		22:    "ssh",
+		23:    "telnet",
+		25:    "smtp",
+		53:    "dns",
+		80:    "http",
+		110:   "pop3",
+		143:   "imap",
+		443:   "https",
+		445:   "smb",
+		465:   "smtps",
+		587:   "smtp",
+		636:   "ldaps",
+		853:   "dns-tls",
+		990:   "ftps",
+		993:   "imaps",
+		995:   "pop3s",
+		1433:  "mssql",
+		1521:  "oracle",
+		2375:  "docker",
+		2376:  "docker-tls",
+		3306:  "mysql",
+		3389:  "rdp",
+		5432:  "postgresql",
+		6379:  "redis",
+		8000:  "http",
+		8080:  "http",
+		8443:  "https",
+		9200:  "elasticsearch",
+		27017: "mongodb",
+	}
 
 	return hints[port]
 }

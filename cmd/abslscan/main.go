@@ -9,66 +9,105 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/abyssalsec/absl-recon/internal/discovery"
 	"github.com/abyssalsec/absl-recon/internal/event"
 	"github.com/abyssalsec/absl-recon/internal/model"
 	"github.com/abyssalsec/absl-recon/internal/report"
 	"github.com/abyssalsec/absl-recon/internal/rules"
 	"github.com/abyssalsec/absl-recon/internal/scanner"
+	targetset "github.com/abyssalsec/absl-recon/internal/target"
 	"github.com/abyssalsec/absl-recon/internal/terminal"
 )
 
-const version = "0.4.0"
+const version = "0.5.0"
+
+type hostResult struct {
+	services []model.Service
+	err      error
+}
 
 func main() {
-	portsSpec :=
-		flag.String(
-			"p",
-			"21-25,53,80,110,143,443,445,"+
-				"465,587,993,995,"+
-				"1433,1521,"+
-				"2375-2376,"+
-				"3306,3389,5432,6379,"+
-				"8080,8443,9200,27017",
-			"ports/ranges",
-		)
+	portsSpec := flag.String(
+		"p",
+		"21-25,53,80,110,143,443,445,"+
+			"465,587,993,995,"+
+			"1433,1521,"+
+			"2375-2376,"+
+			"3306,3389,5432,6379,"+
+			"8080,8443,9200,27017",
+		"ports/ranges",
+	)
 
-	concurrency :=
-		flag.Int(
-			"c",
-			200,
-			"concurrent TCP connection attempts",
-		)
+	concurrency := flag.Int(
+		"c",
+		200,
+		"concurrent TCP connections per host",
+	)
 
-	timeout :=
-		flag.Duration(
-			"timeout",
-			800*time.Millisecond,
-			"per-port timeout",
-		)
+	hostConcurrency := flag.Int(
+		"host-c",
+		4,
+		"hosts scanned concurrently",
+	)
 
-	outBase :=
-		flag.String(
-			"o",
-			"",
-			"output path without extension",
-		)
+	timeout := flag.Duration(
+		"timeout",
+		800*time.Millisecond,
+		"per-port timeout",
+	)
 
-	rulesDir :=
-		flag.String(
-			"rules",
-			"rules",
-			"path to YAML rules directory",
-		)
+	outBase := flag.String(
+		"o",
+		"",
+		"output path without extension",
+	)
+
+	rulesDir := flag.String(
+		"rules",
+		"rules",
+		"path to YAML rules directory",
+	)
+
+	discover := flag.Bool(
+		"discover",
+		true,
+		"run TCP host discovery when scanning multiple targets",
+	)
+
+	discoveryPortsSpec := flag.String(
+		"discover-ports",
+		"22,80,443,445,3389,8080",
+		"ports used for TCP host discovery",
+	)
+
+	discoveryTimeout := flag.Duration(
+		"discover-timeout",
+		300*time.Millisecond,
+		"timeout for each discovery connection",
+	)
+
+	discoveryConcurrency := flag.Int(
+		"discover-c",
+		64,
+		"concurrent host discovery workers",
+	)
+
+	maxHosts := flag.Int(
+		"max-hosts",
+		4096,
+		"maximum number of expanded targets",
+	)
 
 	flag.Parse()
 
-	if flag.NArg() != 1 {
+	if flag.NArg() < 1 {
 		fmt.Fprintf(
 			os.Stderr,
-			"usage: abslscan [options] <target>\n",
+			"usage: abslscan [options] <target|CIDR> [target ...]\n",
 		)
 
 		flag.PrintDefaults()
@@ -76,28 +115,62 @@ func main() {
 		os.Exit(2)
 	}
 
-	target :=
-		flag.Arg(0)
+	started := time.Now()
 
-	ports, err :=
-		scanner.ParsePorts(
-			*portsSpec,
-		)
+	ctx, cancel := signal.NotifyContext(
+		context.Background(),
+		os.Interrupt,
+		syscall.SIGTERM,
+	)
+
+	defer cancel()
+
+	targets, err := targetset.Expand(
+		flag.Args(),
+		*maxHosts,
+	)
 
 	if err != nil {
 		fmt.Fprintln(
 			os.Stderr,
-			"error:",
+			"target error:",
 			err,
 		)
 
 		os.Exit(2)
 	}
 
-	ruleEngine, err :=
-		rules.Load(
-			*rulesDir,
+	ports, err := scanner.ParsePorts(
+		*portsSpec,
+	)
+
+	if err != nil {
+		fmt.Fprintln(
+			os.Stderr,
+			"port error:",
+			err,
 		)
+
+		os.Exit(2)
+	}
+
+	discoveryPorts, err := scanner.ParsePorts(
+		*discoveryPortsSpec,
+	)
+
+	if err != nil {
+		fmt.Fprintln(
+			os.Stderr,
+			"discovery port error:",
+			err,
+		)
+
+		os.Exit(2)
+	}
+
+	ruleEngine, err := rules.Load(
+		*rulesDir,
+	)
 
 	if err != nil {
 		fmt.Fprintln(
@@ -109,73 +182,226 @@ func main() {
 		os.Exit(1)
 	}
 
-	base :=
-		reportBase(
-			target,
-			*outBase,
+	targetSpec := strings.Join(
+		flag.Args(),
+		",",
+	)
+
+	liveTargets := append(
+		[]string(nil),
+		targets...,
+	)
+
+	if *discover &&
+		len(targets) > 1 {
+
+		fmt.Printf(
+			"\033[1;36mABSL RECON\033[0m v%s\n",
+			version,
 		)
 
-	started :=
-		time.Now()
-
-	ctx, cancel :=
-		signal.NotifyContext(
-			context.Background(),
-			os.Interrupt,
-			syscall.SIGTERM,
+		fmt.Printf(
+			"Target expansion: %d hosts\n",
+			len(targets),
 		)
 
-	defer cancel()
-
-	events :=
-		make(
-			chan event.Event,
-			4096,
+		fmt.Printf(
+			"Discovery: TCP ports %s | workers %d | timeout %s\n",
+			*discoveryPortsSpec,
+			*discoveryConcurrency,
+			*discoveryTimeout,
 		)
 
-	renderer :=
-		terminal.New(
-			terminal.Config{
-				Target:  target,
-				Total:   len(ports),
-				Workers: *concurrency,
-				Rules:   ruleEngine.Count(),
-				Version: version,
+		discoveryStarted := time.Now()
+
+		liveTargets = discovery.Discover(
+			ctx,
+			targets,
+			discovery.Config{
+				Ports: discoveryPorts,
+
+				Timeout: *discoveryTimeout,
+
+				Concurrency: *discoveryConcurrency,
 			},
 		)
+
+		fmt.Printf(
+			"Discovery complete: %d/%d hosts responsive in %s\n\n",
+			len(liveTargets),
+			len(targets),
+			time.Since(
+				discoveryStarted,
+			).Round(
+				time.Millisecond,
+			),
+		)
+
+		if len(liveTargets) == 0 {
+			fmt.Println(
+				"No responsive hosts found on the discovery ports.",
+			)
+
+			fmt.Println(
+				"Use -discover=false to force scanning every expanded target.",
+			)
+
+			return
+		}
+	}
+
+	if ctx.Err() != nil {
+		os.Exit(130)
+	}
+
+	if *hostConcurrency < 1 {
+		*hostConcurrency = 1
+	}
+
+	if *hostConcurrency >
+		len(liveTargets) {
+
+		*hostConcurrency =
+			len(liveTargets)
+	}
+
+	totalPorts :=
+		len(liveTargets) *
+			len(ports)
+
+	base := reportBase(
+		targetSpec,
+		*outBase,
+	)
+
+	events := make(
+		chan event.Event,
+		8192,
+	)
+
+	renderer := terminal.New(
+		terminal.Config{
+			TargetSpec: targetSpec,
+
+			Hosts: len(liveTargets),
+
+			PortsPerHost: len(ports),
+
+			Total: totalPorts,
+
+			Workers: *concurrency,
+
+			HostWorkers: *hostConcurrency,
+
+			Rules: ruleEngine.Count(),
+
+			Version: version,
+		},
+	)
 
 	renderer.PrintHeader()
 
-	renderDone :=
-		make(chan struct{})
+	renderDone := make(
+		chan struct{},
+	)
 
 	go func() {
 		renderer.Run(events)
-
 		close(renderDone)
 	}()
 
-	s :=
-		scanner.New(
-			scanner.Config{
-				Target:      target,
-				Ports:       ports,
-				Concurrency: *concurrency,
-				Timeout:     *timeout,
-				Rules:       ruleEngine,
-				Events:      events,
-			},
+	scanStarted := time.Now()
+
+	hostJobs := make(
+		chan string,
+	)
+
+	hostResults := make(
+		chan hostResult,
+	)
+
+	var wg sync.WaitGroup
+
+	for i := 0; i < *hostConcurrency; i++ {
+
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			for host := range hostJobs {
+				s := scanner.New(
+					scanner.Config{
+						Target: host,
+
+						Ports: ports,
+
+						Concurrency: *concurrency,
+
+						Timeout: *timeout,
+
+						Rules: ruleEngine,
+
+						Events: events,
+					},
+				)
+
+				services, err := s.Run(ctx)
+
+				select {
+				case hostResults <- hostResult{
+					services: services,
+
+					err: err,
+				}:
+
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
+
+	go func() {
+		defer close(hostJobs)
+
+		for _, host := range liveTargets {
+			select {
+			case hostJobs <- host:
+
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	go func() {
+		wg.Wait()
+		close(hostResults)
+	}()
+
+	var services []model.Service
+	var scanErr error
+
+	for result := range hostResults {
+		services = append(
+			services,
+			result.services...,
 		)
 
-	services, scanErr :=
-		s.Run(ctx)
+		if result.err != nil &&
+			scanErr == nil {
+
+			scanErr =
+				result.err
+		}
+	}
 
 	close(events)
 
 	<-renderDone
 
-	ended :=
-		time.Now()
+	ended := time.Now()
 
 	sort.Slice(
 		services,
@@ -183,40 +409,55 @@ func main() {
 			i int,
 			j int,
 		) bool {
+			if services[i].Target ==
+				services[j].Target {
 
-			return services[i].Port <
-				services[j].Port
+				return services[i].Port <
+					services[j].Port
+			}
+
+			return services[i].Target <
+				services[j].Target
 		},
 	)
 
 	var findings []model.Finding
 
 	for _, service := range services {
-
-		findings =
-			append(
-				findings,
-				service.Findings...,
-			)
+		findings = append(
+			findings,
+			service.Findings...,
+		)
 	}
 
-	r :=
-		model.Report{
-			Tool:      "ABSL Recon",
-			Version:   version,
-			Target:    target,
-			StartedAt: started.UTC(),
-			EndedAt:   ended.UTC(),
-			Scanned:   len(ports),
-			Services:  services,
-			Findings:  findings,
-		}
+	r := model.Report{
+		Tool: "ABSL Recon",
 
-	if err :=
-		report.WriteAll(
-			base,
-			r,
-		); err != nil {
+		Version: version,
+
+		Target: targetSpec,
+
+		Targets: targets,
+
+		LiveTargets: liveTargets,
+
+		StartedAt: started.UTC(),
+
+		EndedAt: ended.UTC(),
+
+		Hosts: len(liveTargets),
+
+		Scanned: totalPorts,
+
+		Services: services,
+
+		Findings: findings,
+	}
+
+	if err := report.WriteAll(
+		base,
+		r,
+	); err != nil {
 
 		fmt.Fprintf(
 			os.Stderr,
@@ -228,7 +469,9 @@ func main() {
 	}
 
 	renderer.PrintSummary(
-		ended.Sub(started),
+		time.Since(
+			scanStarted,
+		),
 		base,
 	)
 
@@ -255,31 +498,38 @@ func main() {
 }
 
 func reportBase(
-	target string,
+	targetSpec string,
 	configured string,
 ) string {
 	if configured != "" {
 		return configured
 	}
 
-	stamp :=
-		time.Now().
-			Format(
-				"20060102-150405",
-			)
+	stamp := time.Now().
+		Format(
+			"20060102-150405",
+		)
 
-	safeTarget :=
-		strings.NewReplacer(
-			":",
-			"_",
-			"/",
-			"_",
-			"\\",
-			"_",
-		).
-			Replace(
-				target,
-			)
+	safeTarget := strings.NewReplacer(
+		":",
+		"_",
+		"/",
+		"_",
+		"\\",
+		"_",
+		",",
+		"_",
+		" ",
+		"_",
+	).
+		Replace(
+			targetSpec,
+		)
+
+	if len(safeTarget) > 80 {
+		safeTarget =
+			"multi-target"
+	}
 
 	return filepath.Join(
 		"reports",

@@ -22,11 +22,14 @@ const (
 )
 
 type Config struct {
-	Target  string
-	Total   int
-	Workers int
-	Rules   int
-	Version string
+	TargetSpec   string
+	Hosts        int
+	PortsPerHost int
+	Total        int
+	Workers      int
+	HostWorkers  int
+	Rules        int
+	Version      string
 }
 
 type Renderer struct {
@@ -37,16 +40,18 @@ type Renderer struct {
 	scanned int
 	open    int
 
-	services map[int]model.Service
+	services map[string]model.Service
 	findings []model.Finding
 	severity map[string]int
 }
 
-func New(cfg Config) *Renderer {
+func New(
+	cfg Config,
+) *Renderer {
 	return &Renderer{
 		cfg:      cfg,
 		started:  time.Now(),
-		services: make(map[int]model.Service),
+		services: make(map[string]model.Service),
 		severity: make(map[string]int),
 	}
 }
@@ -64,36 +69,48 @@ func (r *Renderer) PrintHeader() {
 	fmt.Println(
 		strings.Repeat(
 			"-",
-			72,
+			88,
 		),
 	)
 
 	fmt.Printf(
-		"%-12s %s\n",
+		"%-14s %s\n",
 		"Target",
-		r.cfg.Target,
+		r.cfg.TargetSpec,
 	)
 
 	fmt.Printf(
-		"%-12s %s\n",
+		"%-14s %s\n",
 		"Scan",
 		"TCP Connect + Active Fingerprinting",
 	)
 
 	fmt.Printf(
-		"%-12s %d\n",
-		"Ports",
-		r.cfg.Total,
+		"%-14s %d\n",
+		"Hosts",
+		r.cfg.Hosts,
 	)
 
 	fmt.Printf(
-		"%-12s %d\n",
-		"Workers",
+		"%-14s %d\n",
+		"Ports/Host",
+		r.cfg.PortsPerHost,
+	)
+
+	fmt.Printf(
+		"%-14s %d\n",
+		"Port Workers",
 		r.cfg.Workers,
 	)
 
 	fmt.Printf(
-		"%-12s %d\n",
+		"%-14s %d\n",
+		"Host Workers",
+		r.cfg.HostWorkers,
+	)
+
+	fmt.Printf(
+		"%-14s %d\n",
 		"Rules",
 		r.cfg.Rules,
 	)
@@ -104,10 +121,9 @@ func (r *Renderer) PrintHeader() {
 func (r *Renderer) Run(
 	events <-chan event.Event,
 ) {
-	ticker :=
-		time.NewTicker(
-			150 * time.Millisecond,
-		)
+	ticker := time.NewTicker(
+		150 * time.Millisecond,
+	)
 
 	defer ticker.Stop()
 
@@ -140,63 +156,63 @@ func (r *Renderer) handle(
 	case event.ServiceFound:
 		r.open++
 
-		r.services[ev.Service.Port] = ev.Service
+		key := fmt.Sprintf(
+			"%s:%d",
+			ev.Service.Target,
+			ev.Service.Port,
+		)
+
+		r.services[key] =
+			ev.Service
 
 		r.clearProgressLocked()
 
 		fmt.Printf(
-			"%sOPEN%s  %5d/tcp  %-16s %-24s %s\n",
+			"%sOPEN%s  %-15s %5d/tcp  %-14s %-24s %s\n",
 			green,
 			reset,
+			ev.Service.Target,
 			ev.Service.Port,
-			serviceName(ev.Service),
-			productLabel(ev.Service),
+			serviceName(
+				ev.Service,
+			),
+			productLabel(
+				ev.Service,
+			),
 			truncate(
 				ev.Service.Banner,
-				50,
+				42,
 			),
 		)
 
 		if ev.Service.TLS != nil {
 			fmt.Printf(
-				"      %sTLS%s   %-8s %-30s",
+				"      %-15s           %sTLS%s %-8s %s\n",
+				"",
 				cyan,
 				reset,
 				ev.Service.TLS.Version,
 				ev.Service.TLS.Cipher,
 			)
-
-			if ev.Service.TLS.Subject != "" {
-				fmt.Printf(
-					" %s",
-					truncate(
-						ev.Service.TLS.Subject,
-						40,
-					),
-				)
-			}
-
-			fmt.Println()
 		}
 
 	case event.FindingFound:
-		r.findings =
-			append(
-				r.findings,
-				ev.Finding,
-			)
+		r.findings = append(
+			r.findings,
+			ev.Finding,
+		)
 
-		severity :=
-			strings.ToLower(
-				ev.Finding.Severity,
-			)
+		severity := strings.ToLower(
+			ev.Finding.Severity,
+		)
 
 		r.severity[severity]++
 
 		r.clearProgressLocked()
 
 		fmt.Printf(
-			"      %s[%s]%s %s - %s\n",
+			"      %-15s %s[%s]%s %s - %s\n",
+			ev.Finding.Target,
 			severityColor(
 				severity,
 			),
@@ -214,10 +230,9 @@ func (r *Renderer) renderProgress() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	elapsed :=
-		time.Since(
-			r.started,
-		)
+	elapsed := time.Since(
+		r.started,
+	)
 
 	rate := 0.0
 
@@ -240,11 +255,10 @@ func (r *Renderer) renderProgress() {
 		percent = 100
 	}
 
-	bar :=
-		progressBar(
-			percent,
-			24,
-		)
+	bar := progressBar(
+		percent,
+		24,
+	)
 
 	fmt.Printf(
 		"\r\033[2K%sSCANNING%s %s %6.2f%%  %d/%d  %8.0f p/s  open:%d  findings:%d",
@@ -272,7 +286,7 @@ func (r *Renderer) PrintSummary(
 	fmt.Println(
 		strings.Repeat(
 			"-",
-			72,
+			88,
 		),
 	)
 
@@ -286,19 +300,25 @@ func (r *Renderer) PrintSummary(
 	)
 
 	fmt.Printf(
-		"%-12s %d\n",
+		"%-14s %d\n",
+		"Hosts",
+		r.cfg.Hosts,
+	)
+
+	fmt.Printf(
+		"%-14s %d\n",
 		"Scanned",
 		r.scanned,
 	)
 
 	fmt.Printf(
-		"%-12s %d\n",
+		"%-14s %d\n",
 		"Open",
 		r.open,
 	)
 
 	fmt.Printf(
-		"%-12s %d\n",
+		"%-14s %d\n",
 		"Findings",
 		len(r.findings),
 	)
@@ -313,7 +333,8 @@ func (r *Renderer) PrintSummary(
 		)
 
 		fmt.Printf(
-			"%-10s %-16s %-28s %-10s %s\n",
+			"%-16s %-10s %-14s %-25s %-8s %s\n",
+			"HOST",
 			"PORT",
 			"SERVICE",
 			"PRODUCT",
@@ -322,7 +343,8 @@ func (r *Renderer) PrintSummary(
 		)
 
 		fmt.Printf(
-			"%-10s %-16s %-28s %-10s %s\n",
+			"%-16s %-10s %-14s %-25s %-8s %s\n",
+			"----",
 			"----",
 			"-------",
 			"-------",
@@ -330,42 +352,55 @@ func (r *Renderer) PrintSummary(
 			"------",
 		)
 
-		ports :=
-			make(
-				[]int,
-				0,
-				len(r.services),
+		services := make(
+			[]model.Service,
+			0,
+			len(r.services),
+		)
+
+		for _, svc := range r.services {
+			services = append(
+				services,
+				svc,
 			)
-
-		for port := range r.services {
-
-			ports =
-				append(
-					ports,
-					port,
-				)
 		}
 
-		sort.Ints(ports)
+		sort.Slice(
+			services,
+			func(
+				i int,
+				j int,
+			) bool {
+				if services[i].Target ==
+					services[j].Target {
 
-		for _, port := range ports {
+					return services[i].Port <
+						services[j].Port
+				}
 
-			svc :=
-				r.services[port]
+				return services[i].Target <
+					services[j].Target
+			},
+		)
 
+		for _, svc := range services {
 			fmt.Printf(
-				"%-10s %-16s %-28s %-10s %s\n",
+				"%-16s %-10s %-14s %-25s %-8s %s\n",
+				truncate(
+					svc.Target,
+					16,
+				),
 				fmt.Sprintf(
 					"%d/tcp",
 					svc.Port,
 				),
 				truncate(
 					serviceName(svc),
-					16,
+					14,
 				),
 				truncate(
 					productLabel(svc),
-					28,
+					25,
 				),
 				fmt.Sprintf(
 					"%d%%",
@@ -373,7 +408,7 @@ func (r *Renderer) PrintSummary(
 				),
 				truncate(
 					svc.Banner,
-					50,
+					42,
 				),
 			)
 		}
@@ -461,12 +496,11 @@ func progressBar(
 	percent float64,
 	width int,
 ) string {
-	filled :=
-		int(
-			percent /
-				100 *
-				float64(width),
-		)
+	filled := int(
+		percent /
+			100 *
+			float64(width),
+	)
 
 	if filled < 0 {
 		filled = 0
@@ -542,24 +576,21 @@ func truncate(
 	value string,
 	max int,
 ) string {
-	value =
-		strings.ReplaceAll(
-			value,
-			"\r",
-			" ",
-		)
+	value = strings.ReplaceAll(
+		value,
+		"\r",
+		" ",
+	)
 
-	value =
-		strings.ReplaceAll(
-			value,
-			"\n",
-			" ",
-		)
+	value = strings.ReplaceAll(
+		value,
+		"\n",
+		" ",
+	)
 
-	value =
-		strings.TrimSpace(
-			value,
-		)
+	value = strings.TrimSpace(
+		value,
+	)
 
 	if len(value) <= max {
 		return value
