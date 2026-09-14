@@ -223,6 +223,24 @@ func (r *Renderer) handle(
 			ev.Finding.ID,
 			ev.Finding.Title,
 		)
+
+		if strings.HasPrefix(strings.ToUpper(ev.Finding.ID), "CVE-") {
+			kev := "no"
+			if ev.Finding.KEV {
+				kev = "YES"
+			}
+			fmt.Printf(
+				"      %-15s %sRISK%s %.1f | CVSS %.1f | EPSS %.2f%% | KEV %s | INTEL %d\n",
+				"",
+				cyan,
+				reset,
+				ev.Finding.RiskScore,
+				ev.Finding.CVSSScore,
+				ev.Finding.EPSSScore*100,
+				kev,
+				len(ev.Finding.ThreatIntel),
+			)
+		}
 	}
 }
 

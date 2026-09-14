@@ -509,7 +509,7 @@ func probeHTTPConn(
 		conn,
 		"HEAD / HTTP/1.1\r\n"+
 			"Host: %s\r\n"+
-			"User-Agent: ABSL-Recon/0.6\r\n"+
+			"User-Agent: ABSL-Recon/0.7\r\n"+
 			"Accept: */*\r\n"+
 			"Connection: close\r\n\r\n",
 		host,

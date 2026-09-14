@@ -14,17 +14,33 @@ type TLSInfo struct {
 	NotAfter   string   `json:"not_after,omitempty"`
 }
 
+type ThreatIntel struct {
+	Source     string `json:"source"`
+	ObjectID   string `json:"object_id,omitempty"`
+	Confidence int    `json:"confidence,omitempty"`
+	Labels     string `json:"labels,omitempty"`
+	FirstSeen  string `json:"first_seen,omitempty"`
+	LastSeen   string `json:"last_seen,omitempty"`
+}
+
 type Finding struct {
-	Target      string   `json:"target,omitempty"`
-	ID          string   `json:"id"`
-	Title       string   `json:"title"`
-	Severity    string   `json:"severity"`
-	Port        int      `json:"port,omitempty"`
-	Protocol    string   `json:"protocol,omitempty"`
-	Description string   `json:"description"`
-	Evidence    string   `json:"evidence,omitempty"`
-	Remediation string   `json:"remediation,omitempty"`
-	References  []string `json:"references,omitempty"`
+	Target         string        `json:"target,omitempty"`
+	ID             string        `json:"id"`
+	Title          string        `json:"title"`
+	Severity       string        `json:"severity"`
+	Port           int           `json:"port,omitempty"`
+	Protocol       string        `json:"protocol,omitempty"`
+	Description    string        `json:"description"`
+	Evidence       string        `json:"evidence,omitempty"`
+	Remediation    string        `json:"remediation,omitempty"`
+	CVSSScore      float64       `json:"cvss_score,omitempty"`
+	CVSSVector     string        `json:"cvss_vector,omitempty"`
+	EPSSScore      float64       `json:"epss_score,omitempty"`
+	EPSSPercentile float64       `json:"epss_percentile,omitempty"`
+	KEV            bool          `json:"kev,omitempty"`
+	RiskScore      float64       `json:"risk_score,omitempty"`
+	ThreatIntel    []ThreatIntel `json:"threat_intel,omitempty"`
+	References     []string      `json:"references,omitempty"`
 }
 
 type Service struct {
@@ -49,9 +65,8 @@ type Report struct {
 	LiveTargets []string  `json:"live_targets"`
 	StartedAt   time.Time `json:"started_at"`
 	EndedAt     time.Time `json:"ended_at"`
-
-	Hosts    int       `json:"hosts_scanned"`
-	Scanned  int       `json:"ports_scanned"`
-	Services []Service `json:"services"`
-	Findings []Finding `json:"findings"`
+	Hosts       int       `json:"hosts_scanned"`
+	Scanned     int       `json:"ports_scanned"`
+	Services    []Service `json:"services"`
+	Findings    []Finding `json:"findings"`
 }

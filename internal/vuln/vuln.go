@@ -1,39 +1,22 @@
 package vuln
 
 import (
+	"context"
 	"fmt"
-	"os"
-	"path/filepath"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/abyssalsec/absl-recon/internal/model"
-	"gopkg.in/yaml.v3"
+	"github.com/abyssalsec/absl-recon/internal/vulndb"
 )
-
-type Record struct {
-	ID                  string   `yaml:"id"`
-	Product             string   `yaml:"product"`
-	Aliases             []string `yaml:"aliases"`
-	ExactVersions       []string `yaml:"exact_versions"`
-	MinVersion          string   `yaml:"min_version"`
-	MaxVersionExclusive string   `yaml:"max_version_exclusive"`
-	Severity            string   `yaml:"severity"`
-	Title               string   `yaml:"title"`
-	Description         string   `yaml:"description"`
-	Remediation         string   `yaml:"remediation"`
-	References          []string `yaml:"references"`
-	Note                string   `yaml:"note"`
-}
 
 type Engine struct {
-	records []Record
+	store *vulndb.Store
 }
 
-var versionTokenPattern = regexp.MustCompile(
-	`(?i)[0-9]+|[a-z]+`,
-)
+var versionTokenPattern = regexp.MustCompile(`(?i)[0-9]+|[a-z]+`)
 
 type versionToken struct {
 	numeric bool
@@ -41,503 +24,252 @@ type versionToken struct {
 	text    string
 }
 
-func Load(
-	dir string,
-) (*Engine, error) {
-	var records []Record
-
-	seen := map[string]bool{}
-
-	err := filepath.Walk(
-		dir,
-		func(
-			path string,
-			info os.FileInfo,
-			err error,
-		) error {
-			if err != nil {
-				return err
-			}
-
-			if info.IsDir() {
-				return nil
-			}
-
-			ext := strings.ToLower(
-				filepath.Ext(path),
-			)
-
-			if ext != ".yaml" &&
-				ext != ".yml" {
-
-				return nil
-			}
-
-			data, err := os.ReadFile(path)
-
-			if err != nil {
-				return err
-			}
-
-			var record Record
-
-			if err := yaml.Unmarshal(
-				data,
-				&record,
-			); err != nil {
-
-				return fmt.Errorf(
-					"%s: %w",
-					path,
-					err,
-				)
-			}
-
-			if err := validate(
-				record,
-			); err != nil {
-
-				return fmt.Errorf(
-					"%s: %w",
-					path,
-					err,
-				)
-			}
-
-			key := strings.ToLower(
-				record.ID +
-					"|" +
-					record.Product,
-			)
-
-			if seen[key] {
-				return fmt.Errorf(
-					"%s: duplicate advisory %s for product %s",
-					path,
-					record.ID,
-					record.Product,
-				)
-			}
-
-			seen[key] = true
-
-			records = append(
-				records,
-				record,
-			)
-
-			return nil
-		},
-	)
-
+func Open(path string) (*Engine, error) {
+	store, err := vulndb.OpenExisting(path)
 	if err != nil {
 		return nil, err
 	}
-
-	return &Engine{
-		records: records,
-	}, nil
+	return &Engine{store: store}, nil
 }
 
-func (e *Engine) Count() int {
-	if e == nil {
-		return 0
+func (e *Engine) Close() error {
+	if e == nil || e.store == nil {
+		return nil
 	}
-
-	return len(e.records)
+	return e.store.Close()
 }
 
-func (e *Engine) Match(
-	service model.Service,
-) []model.Finding {
-	if e == nil {
+func (e *Engine) Match(service model.Service) []model.Finding {
+	if e == nil || e.store == nil || strings.TrimSpace(service.Product) == "" || strings.TrimSpace(service.Version) == "" {
 		return nil
 	}
-
-	if strings.TrimSpace(
-		service.Product,
-	) == "" {
-
+	ctx := context.Background()
+	product := vulndb.NormalizeProduct(service.Product)
+	candidates, err := e.store.Candidates(ctx, product)
+	if err != nil {
 		return nil
 	}
-
-	if strings.TrimSpace(
-		service.Version,
-	) == "" {
-
-		return nil
+	matched := map[string]vulndb.Candidate{}
+	for _, candidate := range candidates {
+		if versionApplies(service.Version, candidate) {
+			if existing, ok := matched[candidate.CVEID]; !ok || candidate.CVSSScore > existing.CVSSScore {
+				matched[candidate.CVEID] = candidate
+			}
+		}
 	}
-
-	var findings []model.Finding
-
-	for _, record := range e.records {
-		if !productMatches(
-			record,
-			service.Product,
-		) {
-
-			continue
+	findings := make([]model.Finding, 0, len(matched))
+	for _, c := range matched {
+		refs, _ := e.store.References(ctx, c.CVEID)
+		intelRows, _ := e.store.Intel(ctx, c.CVEID)
+		intel := make([]model.ThreatIntel, 0, len(intelRows))
+		maxIntelConfidence := 0
+		for _, item := range intelRows {
+			intel = append(intel, model.ThreatIntel{
+				Source:     item.Source,
+				ObjectID:   item.ObjectID,
+				Confidence: item.Confidence,
+				Labels:     item.Labels,
+				FirstSeen:  item.FirstSeen,
+				LastSeen:   item.LastSeen,
+			})
+			if item.Confidence > maxIntelConfidence {
+				maxIntelConfidence = item.Confidence
+			}
 		}
-
-		if !versionMatches(
-			record,
-			service.Version,
-		) {
-
-			continue
+		risk := riskScore(c.CVSSScore, c.EPSSScore, c.KEV, maxIntelConfidence)
+		severity := strings.ToLower(c.Severity)
+		if severity == "" {
+			severity = riskSeverity(risk)
 		}
-
-		description := record.Description
-
-		if record.Note != "" {
-			description += " " + record.Note
+		title := c.Title
+		if title == "" {
+			title = "Potential vulnerability match"
 		}
-
-		findings = append(
-			findings,
-			model.Finding{
-				Target: service.Target,
-
-				ID: record.ID,
-
-				Title: record.Title,
-
-				Severity: strings.ToLower(
-					record.Severity,
-				),
-
-				Port: service.Port,
-
-				Protocol: service.Protocol,
-
-				Description: description,
-
-				Evidence: fmt.Sprintf(
-					"Potential CVE match: remote fingerprint identified %s %s on %s:%d. Version-only remote detection cannot determine whether a vendor backported the security fix.",
-					service.Product,
-					service.Version,
-					service.Target,
-					service.Port,
-				),
-
-				Remediation: record.Remediation,
-
-				References: append(
-					[]string(nil),
-					record.References...,
-				),
-			},
+		description := c.Description
+		if description == "" {
+			description = "The remotely identified product and version match an affected-version entry in the local vulnerability intelligence database."
+		}
+		evidence := fmt.Sprintf(
+			"Potential CVE match: remote fingerprint identified %s %s on %s:%d. Version-only remote detection cannot prove patch state or exploitability.",
+			service.Product, service.Version, service.Target, service.Port,
 		)
+		if c.KEV {
+			evidence += " CISA KEV indicates exploitation in the wild."
+		}
+		findings = append(findings, model.Finding{
+			Target:         service.Target,
+			ID:             c.CVEID,
+			Title:          title,
+			Severity:       severity,
+			Port:           service.Port,
+			Protocol:       service.Protocol,
+			Description:    description,
+			Evidence:       evidence,
+			Remediation:    remediation(c),
+			CVSSScore:      c.CVSSScore,
+			CVSSVector:     c.CVSSVector,
+			EPSSScore:      c.EPSSScore,
+			EPSSPercentile: c.EPSSPercentile,
+			KEV:            c.KEV,
+			RiskScore:      risk,
+			ThreatIntel:    intel,
+			References:     refs,
+		})
 	}
-
 	return findings
 }
 
-func validate(
-	record Record,
-) error {
-	if strings.TrimSpace(
-		record.ID,
-	) == "" {
-
-		return fmt.Errorf(
-			"id is required",
-		)
+func remediation(c vulndb.Candidate) string {
+	if c.KEVAction != "" {
+		return c.KEVAction
 	}
-
-	if strings.TrimSpace(
-		record.Product,
-	) == "" {
-
-		return fmt.Errorf(
-			"product is required",
-		)
-	}
-
-	if strings.TrimSpace(
-		record.Title,
-	) == "" {
-
-		return fmt.Errorf(
-			"title is required",
-		)
-	}
-
-	if strings.TrimSpace(
-		record.Severity,
-	) == "" {
-
-		return fmt.Errorf(
-			"severity is required",
-		)
-	}
-
-	if len(record.ExactVersions) == 0 &&
-		record.MinVersion == "" &&
-		record.MaxVersionExclusive == "" {
-
-		return fmt.Errorf(
-			"at least one version constraint is required",
-		)
-	}
-
-	return nil
+	return "Validate the finding against the vendor advisory and installed package patch state, then apply the vendor security update or upgrade to a fixed release."
 }
 
-func productMatches(
-	record Record,
-	product string,
-) bool {
-	product = normalizeProduct(
-		product,
-	)
-
-	if product ==
-		normalizeProduct(
-			record.Product,
-		) {
-
-		return true
+func riskScore(cvss, epss float64, kev bool, intelConfidence int) float64 {
+	cvssNorm := clamp(cvss/10, 0, 1)
+	epssNorm := clamp(epss, 0, 1)
+	kevNorm := 0.0
+	if kev {
+		kevNorm = 1
 	}
-
-	for _, alias := range record.Aliases {
-		if product ==
-			normalizeProduct(
-				alias,
-			) {
-
-			return true
-		}
-	}
-
-	return false
+	intelNorm := clamp(float64(intelConfidence)/100, 0, 1)
+	score := (cvssNorm*0.35 + epssNorm*0.30 + kevNorm*0.25 + intelNorm*0.10) * 100
+	return math.Round(score*10) / 10
 }
 
-func normalizeProduct(
-	value string,
-) string {
-	value = strings.ToLower(
-		strings.TrimSpace(
-			value,
-		),
-	)
-
-	value = strings.ReplaceAll(
-		value,
-		" ",
-		"",
-	)
-
-	value = strings.ReplaceAll(
-		value,
-		"-",
-		"",
-	)
-
-	value = strings.ReplaceAll(
-		value,
-		"_",
-		"",
-	)
-
-	return value
+func riskSeverity(score float64) string {
+	switch {
+	case score >= 80:
+		return "critical"
+	case score >= 60:
+		return "high"
+	case score >= 35:
+		return "medium"
+	default:
+		return "low"
+	}
 }
 
-func versionMatches(
-	record Record,
-	version string,
-) bool {
-	version = strings.TrimSpace(
-		version,
-	)
+func clamp(v, minValue, maxValue float64) float64 {
+	if v < minValue {
+		return minValue
+	}
+	if v > maxValue {
+		return maxValue
+	}
+	return v
+}
 
+func versionApplies(version string, c vulndb.Candidate) bool {
+	version = strings.TrimSpace(version)
 	if version == "" {
 		return false
 	}
-
-	if len(
-		record.ExactVersions,
-	) > 0 {
-
-		for _, exact := range record.ExactVersions {
-
-			if compareVersions(
-				version,
-				exact,
-			) == 0 {
-
-				return true
-			}
-		}
-
-		return false
+	if c.ExactVersion != "" {
+		return matchExactOrExpression(version, c.ExactVersion)
 	}
-
-	if record.MinVersion != "" {
-		if compareVersions(
-			version,
-			record.MinVersion,
-		) < 0 {
-
+	if c.VersionStart != "" {
+		cmp := compareVersions(version, c.VersionStart)
+		if cmp < 0 || (cmp == 0 && !c.StartInclusive) {
 			return false
 		}
 	}
-
-	if record.MaxVersionExclusive != "" {
-		if compareVersions(
-			version,
-			record.MaxVersionExclusive,
-		) >= 0 {
-
+	if c.VersionEnd != "" {
+		cmp := compareVersions(version, c.VersionEnd)
+		if cmp > 0 || (cmp == 0 && !c.EndInclusive) {
 			return false
 		}
 	}
-
 	return true
 }
 
-func compareVersions(
-	left string,
-	right string,
-) int {
-	a := tokenizeVersion(
-		left,
-	)
-
-	b := tokenizeVersion(
-		right,
-	)
-
-	max := len(a)
-
-	if len(b) > max {
-		max = len(b)
+func matchExactOrExpression(version, constraint string) bool {
+	constraint = strings.TrimSpace(constraint)
+	for _, prefix := range []string{"<=", ">=", "<", ">", "="} {
+		if strings.HasPrefix(constraint, prefix) {
+			other := strings.TrimSpace(strings.TrimPrefix(constraint, prefix))
+			cmp := compareVersions(version, other)
+			switch prefix {
+			case "<=":
+				return cmp <= 0
+			case ">=":
+				return cmp >= 0
+			case "<":
+				return cmp < 0
+			case ">":
+				return cmp > 0
+			case "=":
+				return cmp == 0
+			}
+		}
 	}
+	return compareVersions(version, constraint) == 0
+}
 
-	for i := 0; i < max; i++ {
+func compareVersions(left, right string) int {
+	a := tokenizeVersion(left)
+	b := tokenizeVersion(right)
+	maxLen := len(a)
+	if len(b) > maxLen {
+		maxLen = len(b)
+	}
+	for i := 0; i < maxLen; i++ {
 		if i >= len(a) {
-			if remainingZero(
-				b[i:],
-			) {
+			if remainingZero(b[i:]) {
 				return 0
 			}
-
 			return -1
 		}
-
 		if i >= len(b) {
-			if remainingZero(
-				a[i:],
-			) {
+			if remainingZero(a[i:]) {
 				return 0
 			}
-
 			return 1
 		}
-
-		at := a[i]
-		bt := b[i]
-
+		at, bt := a[i], b[i]
 		switch {
-		case at.numeric &&
-			bt.numeric:
-
+		case at.numeric && bt.numeric:
 			if at.number < bt.number {
 				return -1
 			}
-
 			if at.number > bt.number {
 				return 1
 			}
-
-		case !at.numeric &&
-			!bt.numeric:
-
+		case !at.numeric && !bt.numeric:
 			if at.text < bt.text {
 				return -1
 			}
-
 			if at.text > bt.text {
 				return 1
 			}
-
-		case at.numeric &&
-			!bt.numeric:
-
+		case at.numeric && !bt.numeric:
 			return 1
-
 		default:
 			return -1
 		}
 	}
-
 	return 0
 }
 
-func tokenizeVersion(
-	version string,
-) []versionToken {
-	version = strings.ToLower(
-		strings.TrimSpace(
-			version,
-		),
-	)
-
-	rawTokens :=
-		versionTokenPattern.
-			FindAllString(
-				version,
-				-1,
-			)
-
-	tokens := make(
-		[]versionToken,
-		0,
-		len(rawTokens),
-	)
-
-	for _, raw := range rawTokens {
-		if number, err :=
-			strconv.Atoi(raw); err == nil {
-
-			tokens = append(
-				tokens,
-				versionToken{
-					numeric: true,
-					number:  number,
-				},
-			)
-
-			continue
+func tokenizeVersion(version string) []versionToken {
+	raw := versionTokenPattern.FindAllString(strings.ToLower(strings.TrimSpace(version)), -1)
+	tokens := make([]versionToken, 0, len(raw))
+	for _, item := range raw {
+		if n, err := strconv.Atoi(item); err == nil {
+			tokens = append(tokens, versionToken{numeric: true, number: n})
+		} else {
+			tokens = append(tokens, versionToken{text: item})
 		}
-
-		tokens = append(
-			tokens,
-			versionToken{
-				text: strings.ToLower(
-					raw,
-				),
-			},
-		)
 	}
-
 	return tokens
 }
 
-func remainingZero(
-	tokens []versionToken,
-) bool {
+func remainingZero(tokens []versionToken) bool {
 	for _, token := range tokens {
-		if token.numeric {
-			if token.number != 0 {
-				return false
-			}
-
-			continue
+		if !token.numeric || token.number != 0 {
+			return false
 		}
-
-		return false
 	}
-
 	return true
 }

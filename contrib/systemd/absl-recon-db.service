@@ -1,0 +1,14 @@
+[Unit]
+Description=ABSL Recon vulnerability intelligence feed watcher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/abslscan db watch --interval 1h
+EnvironmentFile=-%h/.config/absl-recon/env
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=default.target
